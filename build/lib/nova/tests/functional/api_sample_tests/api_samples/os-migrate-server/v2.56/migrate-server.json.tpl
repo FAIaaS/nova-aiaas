@@ -1,5 +1,0 @@
-{
-    "migrate": {
-        "host": %(hostname)s
-    }
-}

@@ -1,5 +1,0 @@
-{
-    "flavor": {
-        "description": "updated description"
-    }
-}
