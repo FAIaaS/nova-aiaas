@@ -139,14 +139,14 @@ class EVEDriver(driver.ComputeDriver):
             memory_mb=self.memory_mb,
             local_gb=self.local_gb)
         self.host_status_base = {
-            'hypervisor_type': 'fake',
+            'hypervisor_type': 'eve-os',
             'hypervisor_version': versionutils.convert_version_to_int('1.0'),
             'hypervisor_hostname': CONF.host,
             'cpu_info': {},
             'disk_available_least': 0,
             'supported_instances': [(
                 obj_fields.Architecture.X86_64,
-                obj_fields.HVType.FAKE,
+                obj_fields.HVType.EVE,
                 obj_fields.VMMode.HVM)],
             'numa_topology': None,
           }
@@ -160,12 +160,12 @@ class EVEDriver(driver.ComputeDriver):
         self._host = host
         # NOTE(gibi): this is unnecessary complex and fragile but this is
         # how many current functional sample tests expect the node name.
-        self._set_nodes(['fake-mini'] if self._host == 'compute'
+        self._set_nodes(['eve-mini'] if self._host == 'compute'
                         else [self._host])
 
     def _set_nodes(self, nodes):
         # NOTE(gibi): this is not part of the driver interface but used
-        # by our tests to customize the discovered nodes by the fake
+        # by our tests to customize the discovered nodes by the eve
         # driver.
         self._nodes = nodes
 
@@ -203,8 +203,8 @@ class EVEDriver(driver.ComputeDriver):
             vcpus=flavor.vcpus,
             mem=flavor.memory_mb,
             disk=flavor.root_gb)
-        fake_instance = EVEInstance(instance.name, state, uuid)
-        self.instances[uuid] = fake_instance
+        eve_instance = EVEInstance(instance.name, state, uuid)
+        self.instances[uuid] = eve_instance
 
     def snapshot(self, context, instance, image_id, update_task_state):
         if instance.uuid not in self.instances:
@@ -450,32 +450,32 @@ class EVEDriver(driver.ComputeDriver):
         return [0, 0, 0, 0, None]
 
     def get_console_output(self, context, instance):
-        return 'FAKE CONSOLE OUTPUT\nANOTHER\nLAST LINE'
+        return 'EVE CONSOLE OUTPUT\nANOTHER\nLAST LINE'
 
     def get_vnc_console(self, context, instance):
         return ctype.ConsoleVNC(internal_access_path='FAKE',
-                                host='fakevncconsole.com',
+                                host='evevncconsole.com',
                                 port=6969)
 
     def get_spice_console(self, context, instance):
         return ctype.ConsoleSpice(internal_access_path='FAKE',
-                                  host='fakespiceconsole.com',
+                                  host='evespiceconsole.com',
                                   port=6969,
                                   tlsPort=6970)
 
     def get_rdp_console(self, context, instance):
         return ctype.ConsoleRDP(internal_access_path='FAKE',
-                                host='fakerdpconsole.com',
+                                host='everdpconsole.com',
                                 port=6969)
 
     def get_serial_console(self, context, instance):
         return ctype.ConsoleSerial(internal_access_path='FAKE',
-                                   host='fakerdpconsole.com',
+                                   host='everdpconsole.com',
                                    port=6969)
 
     def get_mks_console(self, context, instance):
         return ctype.ConsoleMKS(internal_access_path='FAKE',
-                                host='fakemksconsole.com',
+                                host='evemksconsole.com',
                                 port=6969)
 
     def get_available_resource(self, nodename):
@@ -504,7 +504,7 @@ class EVEDriver(driver.ComputeDriver):
         host_status['host_hostname'] = nodename
         host_status['host_name_label'] = nodename
         host_status['cpu_info'] = jsonutils.dumps(cpu_info)
-        # NOTE(danms): Because the fake driver runs on the same host
+        # NOTE(danms): Because the eve driver runs on the same host
         # in tests, potentially with multiple nodes, we need to
         # control our node uuids. Make sure we return a unique and
         # consistent uuid for each node we are responsible for to
@@ -572,7 +572,7 @@ class EVEDriver(driver.ComputeDriver):
                                            block_migration=False,
                                            disk_over_commit=False):
         data = migrate_data.LibvirtLiveMigrateData()
-        data.filename = 'fake'
+        data.filename = 'eve'
         data.image_type = CONF.libvirt.images_type
         data.graphics_listen_addr_vnc = CONF.vnc.server_listen
         data.graphics_listen_addr_spice = CONF.spice.server_listen
@@ -598,7 +598,7 @@ class EVEDriver(driver.ComputeDriver):
                          allocations, block_device_info=None, power_on=True):
         injected_files = admin_password = None
         # Finish migration is just like spawning the guest on a destination
-        # host during resize/cold migrate, so re-use the spawn() fake to
+        # host during resize/cold migrate, so re-use the spawn() eve to
         # claim resources and track the instance on this "hypervisor".
         self.spawn(context, instance, image_meta, injected_files,
                    admin_password, allocations,
@@ -646,7 +646,7 @@ class EVEDriver(driver.ComputeDriver):
 
     def get_volume_connector(self, instance):
         return {'ip': CONF.my_block_storage_ip,
-                'initiator': 'fake',
+                'initiator': 'eve',
                 'host': self._host}
 
     def get_available_nodes(self, refresh=False):
@@ -714,7 +714,7 @@ class RescueBFVDriver(MediumEVEDriver):
 
 
 class PowerUpdateEVEDriver(SmallEVEDriver):
-    # A specific fake driver for the power-update external event testing.
+    # A specific eve driver for the power-update external event testing.
 
     def __init__(self, virtapi):
         super(PowerUpdateEVEDriver, self).__init__(virtapi=None)
@@ -916,7 +916,7 @@ class EVEDriverWithPciResources(SmallEVEDriver):
     fixtures around nova.virt.driver.load_compute_driver()
 
     2) The compute service access the hypervisor not only via the virt
-    interface but also reads the sysfs of the host. So simply providing a fake
+    interface but also reads the sysfs of the host. So simply providing a eve
     virt driver instance is not enough to isolate simulated compute services
     that are running on the same host. Also these low level sysfs reads are not
     having host specific information in the call params. So simply mocking the
@@ -947,7 +947,7 @@ class EVEDriverWithPciResources(SmallEVEDriver):
             super(EVEDriverWithPciResources.
                   EVEDriverWithPciResourcesConfigFixture, self).setUp()
             # Set device_spec before the compute node starts to match
-            # with the PCI devices reported by this fake driver.
+            # with the PCI devices reported by this eve driver.
 
             # NOTE(gibi): 0000:01:00 is tagged to physnet1 and therefore not a
             # match based on physnet to our sriov port
@@ -1022,65 +1022,65 @@ class EVEDriverWithPciResources(SmallEVEDriver):
         host_status['pci_passthrough_devices'] = jsonutils.dumps([
             {
                 'address': self.PCI_ADDR_PF1,
-                'product_id': 'fake-product_id',
-                'vendor_id': 'fake-vendor_id',
+                'product_id': 'eve-product_id',
+                'vendor_id': 'eve-vendor_id',
                 'status': 'available',
                 'dev_type': 'type-PF',
                 'parent_addr': None,
                 'numa_node': 0,
-                'label': 'fake-label',
+                'label': 'eve-label',
             },
             {
                 'address': self.PCI_ADDR_PF1_VF1,
-                'product_id': 'fake-product_id',
-                'vendor_id': 'fake-vendor_id',
+                'product_id': 'eve-product_id',
+                'vendor_id': 'eve-vendor_id',
                 'status': 'available',
                 'dev_type': 'type-VF',
                 'parent_addr': self.PCI_ADDR_PF1,
                 'numa_node': 0,
-                'label': 'fake-label',
+                'label': 'eve-label',
                 "parent_ifname": self._host + "-ens1",
             },
             {
                 'address': self.PCI_ADDR_PF2,
-                'product_id': 'fake-product_id',
-                'vendor_id': 'fake-vendor_id',
+                'product_id': 'eve-product_id',
+                'vendor_id': 'eve-vendor_id',
                 'status': 'available',
                 'dev_type': 'type-PF',
                 'parent_addr': None,
                 'numa_node': 0,
-                'label': 'fake-label',
+                'label': 'eve-label',
             },
             {
                 'address': self.PCI_ADDR_PF2_VF1,
-                'product_id': 'fake-product_id',
-                'vendor_id': 'fake-vendor_id',
+                'product_id': 'eve-product_id',
+                'vendor_id': 'eve-vendor_id',
                 'status': 'available',
                 'dev_type': 'type-VF',
                 'parent_addr': self.PCI_ADDR_PF2,
                 'numa_node': 0,
-                'label': 'fake-label',
+                'label': 'eve-label',
                 "parent_ifname": self._host + "-ens2",
             },
             {
                 'address': self.PCI_ADDR_PF3,
-                'product_id': 'fake-product_id',
-                'vendor_id': 'fake-vendor_id',
+                'product_id': 'eve-product_id',
+                'vendor_id': 'eve-vendor_id',
                 'status': 'available',
                 'dev_type': 'type-PF',
                 'parent_addr': None,
                 'numa_node': 0,
-                'label': 'fake-label',
+                'label': 'eve-label',
             },
             {
                 'address': self.PCI_ADDR_PF3_VF1,
-                'product_id': 'fake-product_id',
-                'vendor_id': 'fake-vendor_id',
+                'product_id': 'eve-product_id',
+                'vendor_id': 'eve-vendor_id',
                 'status': 'available',
                 'dev_type': 'type-VF',
                 'parent_addr': self.PCI_ADDR_PF3,
                 'numa_node': 0,
-                'label': 'fake-label',
+                'label': 'eve-label',
                 "parent_ifname": self._host + "-ens3",
             },
         ])
