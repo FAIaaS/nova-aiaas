@@ -1,7 +1,4 @@
-# Copyright 2010 United States Government as represented by the
-# Administrator of the National Aeronautics and Space Administration.
-# All Rights Reserved.
-# Copyright (c) 2010 Citrix Systems, Inc.
+# Copyright (c) 2023 Oleg Sadov <oleg dot sadov at gmail dot com>
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -139,7 +136,7 @@ class EVEDriver(driver.ComputeDriver):
             memory_mb=self.memory_mb,
             local_gb=self.local_gb)
         self.host_status_base = {
-            'hypervisor_type': 'eve-os',
+            'hypervisor_type': 'eve_os',
             'hypervisor_version': versionutils.convert_version_to_int('1.0'),
             'hypervisor_hostname': CONF.host,
             'cpu_info': {},
