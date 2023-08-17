@@ -2,6 +2,10 @@ CHANGES
 =======
 
 * enable validations in nova-lvm
+* Enforce quota usage from placement when unshelving
+* Reproducer for bug 2003991 unshelving offloaded instance
+* Unbind port when offloading a shelved instance
+* Fix failed count for anti-affinity check
 
 27.1.0
 ------

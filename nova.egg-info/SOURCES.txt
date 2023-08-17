@@ -4073,6 +4073,7 @@ releasenotes/notes/placement-via-ksa-02d87c87636912f8.yaml
 releasenotes/notes/pointer-model-b4a1828c43e8d523.yaml
 releasenotes/notes/policy-discover-cli-a14a115cacbdc9c6.yaml
 releasenotes/notes/policy-sample-defaults-changed-b5eea1daeb305251.yaml
+releasenotes/notes/port-binding-removed-shelved-offloaded-f1772a64be007b24.yaml
 releasenotes/notes/port-numa-affinity-policy-f51a74065a1e4369.yaml
 releasenotes/notes/post-allocations-427581fa41671820.yaml
 releasenotes/notes/powervm-hotplug-interface-e54c84ebc039b18c.yaml
@@ -4099,6 +4100,7 @@ releasenotes/notes/quota-driver-is-deprecated-a915edf8777f3ddb.yaml
 releasenotes/notes/quota-limits-classes-api-db-88e5d0d2426d2dba.yaml
 releasenotes/notes/quota-refresh-deprecated-08040cb2e62fdc6b.yaml
 releasenotes/notes/quota-show-detail-access-d6f37282d288fa33.yaml
+releasenotes/notes/quota-unshelve-offloaded-e4ea2d6a1449f549.yaml
 releasenotes/notes/quota-usage-placement-5b3f62e83056f59d.yaml
 releasenotes/notes/rbd-enhance-get-pool-info-14afc8eccab49dcf.yaml
 releasenotes/notes/rbd-hyperv-support-672a34b1d87e68eb.yaml
