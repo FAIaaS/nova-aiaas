@@ -24,8 +24,11 @@ import collections
 import contextlib
 import time
 import uuid
-import spur
 import re
+import os
+import paramiko
+import spur
+from scp import SCPClient
 
 import fixtures
 import os_resource_classes as orc
@@ -47,6 +50,7 @@ from nova.objects import fields as obj_fields
 from nova.objects import migrate_data
 from nova.virt import driver
 from nova.virt import hardware
+from nova.virt import images
 from nova.virt.ironic import driver as ironic
 import nova.virt.node
 from nova.virt import virtapi
@@ -55,6 +59,7 @@ CONF = nova.conf.CONF
 
 LOG = logging.getLogger(__name__)
 
+CWD = '/home/eden/eden/'
 
 def eden_connect():
     shell = spur.SshShell(hostname="192.168.122.138", port=22, username="eden",
@@ -64,72 +69,92 @@ def eden_connect():
     return shell
 
 def eden_status():
+    state = power_state.SHUTDOWN
     shell = eden_connect()
     with shell:
-        result = shell.run(['./eden', 'status'], cwd='/home/eden/eden/')
+        result = shell.run(['./eden', 'status'], cwd=CWD)
         if result.output:
             out = result.output.decode("utf-8")
-            LOG.info('EDEN stdout: ' + out)
+            LOG.debug('EDEN stdout: ' + out)
+            state = 'EVE on Qemu status: running with pid ' in out \
+                if power_state.RUNNING else power_state.SHUTDOWN
+
         if result.stderr_output:
             eout = result.stderr_output.decode("utf-8")
-            LOG.info('EDEN stderr: ' + eout)
-
-        return(out, eout, result.return_code)
+            LOG.debug('EDEN stderr: ' + eout)
+            
+    LOG.debug('EDEN status: ' + str(state))
+    return(state)
 
 def eden_start():
     shell = eden_connect()
     with shell:
-        result = shell.run(['./eden', 'start'], cwd='/home/eden/eden/')
+        result = shell.run(['./eden', 'start'], cwd=CWD)
         if result.output:
             out = result.output.decode("utf-8")
-            LOG.info('EDEN stdout: ' + out)
+            LOG.debug('EDEN stdout: ' + out)
         if result.stderr_output:
             eout = result.stderr_output.decode("utf-8")
-            LOG.info('EDEN stderr: ' + eout)
+            LOG.debug('EDEN stderr: ' + eout)
 
         return(out, eout, result.return_code)
 
 def eden_stop():
     shell = eden_connect()
     with shell:
-        result = shell.run(['./eden', 'stop'], cwd='/home/eden/eden/')
+        result = shell.run(['./eden', 'stop'], cwd=CWD)
         if result.output:
             out = result.output.decode("utf-8")
-            LOG.info('EDEN stdout: ' + out)
+            LOG.debug('EDEN stdout: ' + out)
         if result.stderr_output:
             eout = result.stderr_output.decode("utf-8")
-            LOG.info('EDEN stderr: ' + eout)
+            LOG.debug('EDEN stderr: ' + eout)
 
         return(out, eout, result.return_code)
 
-def eden_state():
-    out = eden_status()
-    state = 'EVE on Qemu status: running with pid ' in out \
-        if power_state.RUNNING else power_state.SHUTDOWN
+def eden_state(name):
+    state = None
+    shell = eden_connect()
+    with shell:
+        result = shell.run(['./eden', 'pod', 'ps'], cwd=CWD)
+        if result.output:
+            out = result.output.decode("utf-8")
+            LOG.debug('EDEN stdout: ' + out)
+            search = re.search("^%s " % name, out, re.MULTILINE)
+            if search:
+                ename = search.group(1)
+                state = power_state.RUNNING
+            else:
+                state = power_state.SHUTDOWN
+        if result.stderr_output:
+            eout = result.stderr_output.decode("utf-8")
+            LOG.debug('EDEN stderr: ' + eout)
+
     return(state)
 
-def eden_pod_deploy(name, vcpus, mem, disk):
+def eden_pod_deploy(name, vcpus, mem, disk, image):
     ename=''
     shell = eden_connect()
     eden_cmd = ['./eden', 'pod', 'deploy', '--name', name,
                 '--cpus', str(vcpus), '--memory', str(mem)+'MB',
                 '--disk-size', str(disk)+'GB',
-                'docker://lfedge/eden-docker-test:83cfe07']
+                image]
+                #'docker://lfedge/eden-docker-test:83cfe07']
     
-    LOG.info('EDEN cmd: ' + str(eden_cmd))
+    LOG.debug('EDEN cmd: ' + str(eden_cmd))
     
     with shell:
-        result = shell.run(eden_cmd, cwd='/home/eden/eden/')
+        result = shell.run(eden_cmd, cwd=CWD)
         if result.output:
             out = result.output.decode("utf-8")
-            LOG.info('EDEN stdout: ' + out)
+            LOG.debug('EDEN stdout: ' + out)
             search = re.search("INFO\[\d*\] deploy pod (.*) with .* request sent", out)
             if search:
                 ename = search.group(1)
                 return(name)
         if result.stderr_output:
             eout = result.stderr_output.decode("utf-8")
-            LOG.info('EDEN stderr: ' + eout)
+            LOG.debug('EDEN stderr: ' + eout)
 
     return ename
 
@@ -138,28 +163,29 @@ def eden_pod_delete(name):
     shell = eden_connect()
     eden_cmd = ['./eden', 'pod', 'delete', name]
 
-    LOG.info('EDEN cmd: ' + str(eden_cmd))
+    LOG.debug('EDEN cmd: ' + str(eden_cmd))
     
     with shell:
-        result = shell.run(eden_cmd, cwd='/home/eden/eden/')
+        result = shell.run(eden_cmd, cwd=CWD)
         if result.output:
             out = result.output.decode("utf-8")
-            LOG.info('EDEN stdout: ' + out)
+            LOG.debug('EDEN stdout: ' + out)
             search = re.search("INFO\[\d*\] app (.*) delete done",out)
             if search:
                 ename = search.group(1)
                 return(name)
         if result.stderr_output:
             eout = result.stderr_output.decode("utf-8")
-            LOG.info('EDEN stderr: ' + eout)
+            LOG.debug('EDEN stderr: ' + eout)
 
     return ename
 
 
 class EVEInstance(object):
 
-    def __init__(self, name, state, uuid):
+    def __init__(self, name, ename, state, uuid):
         self.name = name
+        self.ename = ename
         self.state = state
         self.uuid = uuid
 
@@ -220,7 +246,9 @@ class EVEDriver(driver.ComputeDriver):
         "supports_remote_managed_ports": True,
 
         # Supported image types
-        "supports_image_type_raw": True,
+        "supports_image_type_raw": False,
+        "supports_image_type_qcow2": True,
+        "supports_image_type_docker": True,
         "supports_image_type_vhd": False,
         }
 
@@ -275,7 +303,9 @@ class EVEDriver(driver.ComputeDriver):
         if instance.uuid not in self.instances:
             raise exception.InstanceNotFound(instance_id=instance.uuid)
         i = self.instances[instance.uuid]
-        return hardware.InstanceInfo(state=i.state)
+        #return hardware.InstanceInfo(state=i.state)
+        state = eden_state(i.ename)
+        return hardware.InstanceInfo(state=state)
 
     def list_instances(self):
         return [self.instances[uuid].name for uuid in self.instances.keys()]
@@ -305,18 +335,39 @@ class EVEDriver(driver.ComputeDriver):
                 self._interfaces[vif['id']] = vif
 
         uuid = instance.uuid
-        name = instance.display_name
+        ename = instance.display_name
         state = power_state.RUNNING if power_on else power_state.SHUTDOWN
+
         flavor = instance.flavor
         self.resources.claim(
             vcpus=flavor.vcpus,
             mem=flavor.memory_mb,
             disk=flavor.root_gb)
-        eve_instance = EVEInstance(instance.name, state, uuid)
+        eve_instance = EVEInstance(instance.name, ename, state, uuid)
         self.instances[uuid] = eve_instance
-        ename = eden_pod_deploy(name, flavor.vcpus,
-                               flavor.memory_mb, flavor.root_gb)
 
+        # Download image
+        LOG.debug("Image META: " + str(image_meta))
+        image_path = os.path.join(os.path.normpath("/tmp"),
+                                  image_meta.id)
+        eden_image_path = "/tmp/" + image_meta.name
+        if not os.path.exists(image_path):
+            LOG.debug("Downloading the image %s from glance to nova compute "
+                      "server", image_path)
+            images.fetch(context, image_meta.id, image_path)
+
+        # Copy image to EDEN host    
+        client = paramiko.SSHClient()
+        client.load_system_host_keys()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(hostname="192.168.122.138", port=22, username="eden",
+                       key_filename="/var/lib/nova/.ssh/eden_rsa")
+        scp = SCPClient(client.get_transport())
+        scp.put(image_path, eden_image_path)
+            
+        ename = eden_pod_deploy(ename, flavor.vcpus, flavor.memory_mb,
+                                flavor.root_gb, eden_image_path)
+        
     def destroy(self, context, instance, network_info, block_device_info=None,
                 destroy_disks=True, destroy_secrets=True):
         key = instance.uuid
@@ -390,7 +441,7 @@ class EVEDriver(driver.ComputeDriver):
                                 power_on=True):
         state = power_state.RUNNING if power_on else power_state.SHUTDOWN
         self.instances[instance.uuid] = EVEInstance(
-            instance.name, state, instance.uuid)
+            instance.name, ename, state, instance.uuid)
 
     def post_live_migration_at_destination(self, context, instance,
                                            network_info,
