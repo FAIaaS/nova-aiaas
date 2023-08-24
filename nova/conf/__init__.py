@@ -32,6 +32,7 @@ from nova.conf import consoleauth
 from nova.conf import cyborg
 from nova.conf import database
 from nova.conf import devices
+from nova.conf import eve_os
 from nova.conf import ephemeral_storage
 from nova.conf import glance
 from nova.conf import guestfs
@@ -81,6 +82,7 @@ consoleauth.register_opts(CONF)
 cyborg.register_opts(CONF)
 database.register_opts(CONF)
 devices.register_opts(CONF)
+eve_os.register_opts(CONF)
 ephemeral_storage.register_opts(CONF)
 glance.register_opts(CONF)
 guestfs.register_opts(CONF)

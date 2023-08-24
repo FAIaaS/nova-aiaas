@@ -27,7 +27,8 @@ import uuid
 import re
 import os
 import paramiko
-import spur
+import pexpect
+import time
 from scp import SCPClient
 
 import fixtures
@@ -59,66 +60,109 @@ CONF = nova.conf.CONF
 
 LOG = logging.getLogger(__name__)
 
-CWD = '/home/eden/eden/'
+def eden_ssh():
+    client = paramiko.SSHClient()
+    client.load_system_host_keys()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    pkey = paramiko.RSAKey.from_private_key_file(CONF.eve_os.eden_key_file)
+    client.connect(hostname=CONF.eve_os.eden_host,
+                   port=int(CONF.eve_os.eden_port),
+                   username=CONF.eve_os.eden_user,
+                   pkey=pkey)
+        
+    return client
 
 def eden_connect():
-    shell = spur.SshShell(hostname="192.168.122.138", port=22, username="eden",
-                          private_key_file="/var/lib/nova/.ssh/eden_rsa",
-                          missing_host_key=spur.ssh.MissingHostKey.accept
-                          )
-    return shell
+    LOG.debug('EDEN CONF: ')
+    for i in CONF.eve_os.items():
+        LOG.debug(i)
+
+    try:
+        client = eden_ssh()
+    except:
+        if not os.path.isfile(CONF.eve_os.eden_key_file):
+            # Generate SSH key for EDEN host connection
+            cmd = "ssh-keygen -P '' -N '' -f " + CONF.eve_os.eden_key_file
+            LOG.debug('EDEN cmd: ' + cmd)
+            res = os.system(cmd)
+
+            if res != 0:
+                raise exception.HypervisorUnavailable()
+        # Copy SSH key to EDEN host
+        cmd = "ssh-copy-id -f -p %s -i %s %s@%s" % \
+            (CONF.eve_os.eden_port,
+             CONF.eve_os.eden_key_file,
+             CONF.eve_os.eden_user,
+             CONF.eve_os.eden_host)
+        LOG.debug('EDEN cmd: ' + cmd)
+        child = pexpect.spawn(cmd)
+        try:
+            child.expect('password:')
+            child.sendline(CONF.eve_os.eden_password)
+            time.sleep(2)
+        except:
+            raise exception.HypervisorUnavailable()
+        try:
+            client = eden_ssh()
+        except:
+            raise exception.HypervisorUnavailable()
+        
+    return client
 
 def eden_status():
     state = power_state.SHUTDOWN
-    shell = eden_connect()
-    with shell:
-        result = shell.run(['./eden', 'status'], cwd=CWD)
-        if result.output:
-            out = result.output.decode("utf-8")
+    connect = eden_connect()
+    with connect:
+        stdin, stdout, stderr = connect.exec_command(
+            'cd ' + CONF.eve_os.eden_dir + '; ./eden status')
+        if stdout:
+            out = stdout.read().decode("utf-8")
             LOG.debug('EDEN stdout: ' + out)
             state = 'EVE on Qemu status: running with pid ' in out \
                 if power_state.RUNNING else power_state.SHUTDOWN
-
-        if result.stderr_output:
-            eout = result.stderr_output.decode("utf-8")
-            LOG.debug('EDEN stderr: ' + eout)
+        if stderr:
+            out = stderr.read().decode("utf-8")
+            LOG.debug('EDEN stderr: ' + out)
             
     LOG.debug('EDEN status: ' + str(state))
     return(state)
 
 def eden_start():
-    shell = eden_connect()
-    with shell:
-        result = shell.run(['./eden', 'start'], cwd=CWD)
-        if result.output:
-            out = result.output.decode("utf-8")
+    connect = eden_connect()
+    with connect:
+        stdin, stdout, stderr = connect.exec_command(
+            'cd ' + CONF.eve_os.eden_dir + '; ./eden start')
+        if stdout:
+            out = stdout.read().decode("utf-8")
             LOG.debug('EDEN stdout: ' + out)
-        if result.stderr_output:
-            eout = result.stderr_output.decode("utf-8")
-            LOG.debug('EDEN stderr: ' + eout)
-
-        return(out, eout, result.return_code)
+        if stderr:
+            out = stderr.read().decode("utf-8")
+            LOG.debug('EDEN stderr: ' + out)
+            
+        return(stdout.channel.recv_exit_status())
 
 def eden_stop():
-    shell = eden_connect()
-    with shell:
-        result = shell.run(['./eden', 'stop'], cwd=CWD)
-        if result.output:
-            out = result.output.decode("utf-8")
+    connect = eden_connect()
+    with connect:
+        stdin, stdout, stderr = connect.exec_command(
+            'cd ' + CONF.eve_os.eden_dir + '; ./eden stop')
+        if stdout:
+            out = stdout.read().decode("utf-8")
             LOG.debug('EDEN stdout: ' + out)
-        if result.stderr_output:
-            eout = result.stderr_output.decode("utf-8")
-            LOG.debug('EDEN stderr: ' + eout)
-
-        return(out, eout, result.return_code)
+        if stderr:
+            out = stderr.read().decode("utf-8")
+            LOG.debug('EDEN stderr: ' + out)
+            
+        return(stdout.channel.recv_exit_status())
 
 def eden_state(name):
     state = None
-    shell = eden_connect()
-    with shell:
-        result = shell.run(['./eden', 'pod', 'ps'], cwd=CWD)
-        if result.output:
-            out = result.output.decode("utf-8")
+    connect = eden_connect()
+    with connect:
+        stdin, stdout, stderr = connect.exec_command(
+            'cd ' + CONF.eve_os.eden_dir + '; ./eden pod ps')
+        if stdout:
+            out = stdout.read().decode("utf-8")
             LOG.debug('EDEN stdout: ' + out)
             search = re.search("^%s " % name, out, re.MULTILINE)
             if search:
@@ -126,57 +170,57 @@ def eden_state(name):
                 state = power_state.RUNNING
             else:
                 state = power_state.SHUTDOWN
-        if result.stderr_output:
-            eout = result.stderr_output.decode("utf-8")
-            LOG.debug('EDEN stderr: ' + eout)
+        if stderr:
+            out = stderr.read().decode("utf-8")
+            LOG.debug('EDEN stderr: ' + out)
 
     return(state)
 
 def eden_pod_deploy(name, vcpus, mem, disk, image):
     ename=''
-    shell = eden_connect()
-    eden_cmd = ['./eden', 'pod', 'deploy', '--name', name,
-                '--cpus', str(vcpus), '--memory', str(mem)+'MB',
-                '--disk-size', str(disk)+'GB',
-                image]
-                #'docker://lfedge/eden-docker-test:83cfe07']
+    connect = eden_connect()
+    eden_cmd = './eden pod deploy --name=' + name + \
+        ' --cpus=' + str(vcpus) + ' --memory=' + str(mem)+'MB' + \
+        ' --disk-size=' + str(disk)+'GB ' + image
     
     LOG.debug('EDEN cmd: ' + str(eden_cmd))
     
-    with shell:
-        result = shell.run(eden_cmd, cwd=CWD)
-        if result.output:
-            out = result.output.decode("utf-8")
+    with connect:
+        stdin, stdout, stderr = connect.exec_command(
+            'cd ' + CONF.eve_os.eden_dir + '; ' + eden_cmd)
+        if stdout:
+            out = stdout.read().decode("utf-8")
             LOG.debug('EDEN stdout: ' + out)
             search = re.search("INFO\[\d*\] deploy pod (.*) with .* request sent", out)
             if search:
                 ename = search.group(1)
                 return(name)
-        if result.stderr_output:
-            eout = result.stderr_output.decode("utf-8")
-            LOG.debug('EDEN stderr: ' + eout)
+        if stderr:
+            out = stderr.read().decode("utf-8")
+            LOG.debug('EDEN stderr: ' + out)
 
     return ename
 
 def eden_pod_delete(name):
     ename=''
-    shell = eden_connect()
-    eden_cmd = ['./eden', 'pod', 'delete', name]
+    connect = eden_connect()
+    eden_cmd = './eden pod delete ' + name
 
     LOG.debug('EDEN cmd: ' + str(eden_cmd))
     
-    with shell:
-        result = shell.run(eden_cmd, cwd=CWD)
-        if result.output:
-            out = result.output.decode("utf-8")
+    with connect:
+        stdin, stdout, stderr = connect.exec_command(
+            'cd ' + CONF.eve_os.eden_dir + '; ' + eden_cmd)
+        if stdout:
+            out = stdout.read().decode("utf-8")
             LOG.debug('EDEN stdout: ' + out)
             search = re.search("INFO\[\d*\] app (.*) delete done",out)
             if search:
                 ename = search.group(1)
                 return(name)
-        if result.stderr_output:
-            eout = result.stderr_output.decode("utf-8")
-            LOG.debug('EDEN stderr: ' + eout)
+        if stderr:
+            out = stderr.read().decode("utf-8")
+            LOG.debug('EDEN stderr: ' + out)
 
     return ename
 
@@ -291,7 +335,7 @@ class EVEDriver(driver.ComputeDriver):
         # how many current functional sample tests expect the node name.
         self._set_nodes(['eve-mini'] if self._host == 'compute'
                         else [self._host])
-        #eden_start()
+        eden_start()
 
     def _set_nodes(self, nodes):
         # NOTE(gibi): this is not part of the driver interface but used
@@ -347,22 +391,21 @@ class EVEDriver(driver.ComputeDriver):
         self.instances[uuid] = eve_instance
 
         # Download image
-        LOG.debug("Image META: " + str(image_meta))
-        image_path = os.path.join(os.path.normpath("/tmp"),
+        LOG.debug("EDEN Image META: " + str(image_meta))
+        image_path = os.path.join(os.path.normpath(CONF.eve_os.image_tmp_path),
                                   image_meta.id)
-        eden_image_path = "/tmp/" + image_meta.name
+        eden_image_path = os.path.join(
+            os.path.normpath(CONF.eve_os.eden_tmp_path), image_meta.name)
+        LOG.debug("EDEN image_path: " + image_path)
+        LOG.debug("EDEN eden_image_path: " + eden_image_path)
         if not os.path.exists(image_path):
             LOG.debug("Downloading the image %s from glance to nova compute "
                       "server", image_path)
             images.fetch(context, image_meta.id, image_path)
 
-        # Copy image to EDEN host    
-        client = paramiko.SSHClient()
-        client.load_system_host_keys()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(hostname="192.168.122.138", port=22, username="eden",
-                       key_filename="/var/lib/nova/.ssh/eden_rsa")
-        scp = SCPClient(client.get_transport())
+        # Copy image to EDEN host
+        connect = eden_connect()
+        scp = SCPClient(connect.get_transport())
         scp.put(image_path, eden_image_path)
             
         ename = eden_pod_deploy(ename, flavor.vcpus, flavor.memory_mb,
@@ -838,456 +881,6 @@ class EVEVirtAPI(virtapi.VirtAPI):
 
     def update_compute_provider_status(self, context, rp_uuid, enabled):
         pass
-
-
-class SmallEVEDriver(EVEDriver):
-    # The api samples expect specific cpu memory and disk sizes. In order to
-    # allow the EVEVirt driver to be used outside of the unit tests, provide
-    # a separate class that has the values expected by the api samples. So
-    # instead of requiring new samples every time those
-    # values are adjusted allow them to be overwritten here.
-
-    vcpus = 2
-    memory_mb = 8192
-    local_gb = 1028
-
-
-class MediumEVEDriver(EVEDriver):
-    # EVE driver that has enough resources to host more than one instance
-    # but not that much that cannot be exhausted easily
-
-    vcpus = 10
-    memory_mb = 8192
-    local_gb = 1028
-
-
-class SameHostColdMigrateDriver(MediumEVEDriver):
-    """MediumEVEDriver variant that supports same-host cold migrate."""
-    capabilities = dict(EVEDriver.capabilities,
-                        supports_migrate_to_same_host=True)
-
-
-class RescueBFVDriver(MediumEVEDriver):
-    capabilities = dict(EVEDriver.capabilities, supports_bfv_rescue=True)
-
-
-class PowerUpdateEVEDriver(SmallEVEDriver):
-    # A specific eve driver for the power-update external event testing.
-
-    def __init__(self, virtapi):
-        super(PowerUpdateEVEDriver, self).__init__(virtapi=None)
-        self.driver = ironic.IronicDriver(virtapi=virtapi)
-
-    def power_update_event(self, instance, target_power_state):
-        """Update power state of the specified instance in the nova DB."""
-        self.driver.power_update_event(instance, target_power_state)
-
-
-class MediumEVEDriverWithNestedCustomResources(MediumEVEDriver):
-    # A MediumEVEDriver variant that also reports CUSTOM_MAGIC resources on
-    # a nested resource provider
-    vcpus = 10
-    memory_mb = 8192
-    local_gb = 1028
-    child_resources = {
-            'CUSTOM_MAGIC': {
-                'total': 10,
-                'reserved': 0,
-                'min_unit': 1,
-                'max_unit': 10,
-                'step_size': 1,
-                'allocation_ratio': 1,
-            }
-    }
-
-    def update_provider_tree(self, provider_tree, nodename, allocations=None):
-        super(
-            MediumEVEDriverWithNestedCustomResources,
-            self).update_provider_tree(
-                provider_tree, nodename,
-                allocations=allocations)
-
-        if not provider_tree.exists(nodename + '-child'):
-            provider_tree.new_child(name=nodename + '-child',
-                                    parent=nodename)
-
-        provider_tree.update_inventory(nodename + '-child',
-                                       self.child_resources)
-
-
-class EVEFinishMigrationFailDriver(EVEDriver):
-    """EVEDriver variant that will raise an exception from finish_migration"""
-
-    def finish_migration(self, *args, **kwargs):
-        raise exception.VirtualInterfaceCreateException()
-
-
-class PredictableNodeUUIDDriver(SmallEVEDriver):
-    """SmallEVEDriver variant that reports a predictable node uuid in
-    get_available_resource, like IronicDriver.
-    """
-
-    def get_available_resource(self, nodename):
-        resources = super(
-            PredictableNodeUUIDDriver, self).get_available_resource(nodename)
-        # This is used in ComputeNode.update_from_virt_driver which is called
-        # from the ResourceTracker when creating a ComputeNode.
-        resources['uuid'] = str(uuid.uuid5(uuid.NAMESPACE_DNS, nodename))
-        return resources
-
-
-class EVERescheduleDriver(EVEDriver):
-    """EVEDriver derivative that triggers a reschedule on the first spawn
-    attempt. This is expected to only be used in tests that have more than
-    one compute service.
-    """
-    # dict, keyed by instance uuid, mapped to a boolean telling us if the
-    # instance has been rescheduled or not
-    rescheduled = {}
-
-    def spawn(self, context, instance, image_meta, injected_files,
-              admin_password, allocations, network_info=None,
-              block_device_info=None, power_on=True, accel_info=None):
-        if not self.rescheduled.get(instance.uuid, False):
-            # We only reschedule on the first time something hits spawn().
-            self.rescheduled[instance.uuid] = True
-            raise exception.ComputeResourcesUnavailable(
-                reason='EVERescheduleDriver')
-        super(EVERescheduleDriver, self).spawn(
-            context, instance, image_meta, injected_files,
-            admin_password, allocations, network_info, block_device_info,
-            power_on)
-
-
-class EVERescheduleDriverWithNestedCustomResources(
-        EVERescheduleDriver, MediumEVEDriverWithNestedCustomResources):
-    pass
-
-
-class EVEBuildAbortDriver(EVEDriver):
-    """EVEDriver derivative that always fails on spawn() with a
-    BuildAbortException so no reschedule is attempted.
-    """
-
-    def spawn(self, context, instance, image_meta, injected_files,
-              admin_password, allocations, network_info=None,
-              block_device_info=None, power_on=True, accel_info=None):
-        raise exception.BuildAbortException(
-            instance_uuid=instance.uuid, reason='EVEBuildAbortDriver')
-
-
-class EVEBuildAbortDriverWithNestedCustomResources(
-    EVEBuildAbortDriver, MediumEVEDriverWithNestedCustomResources):
-    pass
-
-
-class EVEUnshelveSpawnFailDriver(EVEDriver):
-    """EVEDriver derivative that always fails on spawn() with a
-    VirtualInterfaceCreateException when unshelving an offloaded instance.
-    """
-
-    def spawn(self, context, instance, image_meta, injected_files,
-              admin_password, allocations, network_info=None,
-              block_device_info=None, power_on=True, accel_info=None):
-        if instance.vm_state == vm_states.SHELVED_OFFLOADED:
-            raise exception.VirtualInterfaceCreateException(
-                'EVEUnshelveSpawnFailDriver')
-        # Otherwise spawn normally during the initial build.
-        super(EVEUnshelveSpawnFailDriver, self).spawn(
-            context, instance, image_meta, injected_files,
-            admin_password, allocations, network_info, block_device_info,
-            power_on)
-
-
-class EVEUnshelveSpawnFailDriverWithNestedCustomResources(
-    EVEUnshelveSpawnFailDriver, MediumEVEDriverWithNestedCustomResources):
-    pass
-
-
-class EVELiveMigrateDriver(EVEDriver):
-    """EVEDriver derivative to handle force_complete and abort calls.
-
-    This module serves those tests that need to abort or force-complete
-    the live migration, thus the live migration will never be finished
-    without the force_complete_migration or delete_migration API calls.
-
-    """
-
-    def __init__(self, virtapi, read_only=False):
-        super(EVELiveMigrateDriver, self).__init__(virtapi, read_only)
-        self._migrating = True
-        self._abort_migration = True
-
-    def live_migration(self, context, instance, dest,
-                       post_method, recover_method, block_migration=False,
-                       migrate_data=None):
-        self._abort_migration = False
-        self._migrating = True
-        count = 0
-        while self._migrating and count < 50:
-            time.sleep(0.1)
-            count = count + 1
-
-        if self._abort_migration:
-            recover_method(context, instance, dest, migrate_data,
-                           migration_status='cancelled')
-        else:
-            post_method(context, instance, dest, block_migration,
-                        migrate_data)
-
-    def live_migration_force_complete(self, instance):
-        self._migrating = False
-        if instance.uuid in self.instances:
-            del self.instances[instance.uuid]
-
-    def live_migration_abort(self, instance):
-        self._abort_migration = True
-        self._migrating = False
-
-    def post_live_migration(self, context, instance, block_device_info,
-                            migrate_data=None):
-        # Runs on the source host, called from
-        # ComputeManager._post_live_migration so just delete the instance
-        # from being tracked on the source host.
-        self.destroy(context, instance, network_info=None,
-                     block_device_info=block_device_info)
-
-
-class EVELiveMigrateDriverWithNestedCustomResources(
-        EVELiveMigrateDriver, MediumEVEDriverWithNestedCustomResources):
-    pass
-
-
-class EVEDriverWithPciResources(SmallEVEDriver):
-    """NOTE: this driver provides symmetric compute nodes. Each compute will
-    have the same resources with the same addresses. It is dangerous as using
-    this driver can hide issues when in an asymmetric environment nova fails to
-    update entities according to the host specific addresses (e.g. pci_slot of
-    the neutron port bindings).
-
-    The current non virt driver specific functional test environment has many
-    shortcomings making it really hard to simulate host specific virt drivers.
-
-    1) The virt driver is instantiated by the service logic from the name of
-    the driver class. This makes passing input to the driver instance from the
-    test at init time pretty impossible. This could be solved with some
-    fixtures around nova.virt.driver.load_compute_driver()
-
-    2) The compute service access the hypervisor not only via the virt
-    interface but also reads the sysfs of the host. So simply providing a eve
-    virt driver instance is not enough to isolate simulated compute services
-    that are running on the same host. Also these low level sysfs reads are not
-    having host specific information in the call params. So simply mocking the
-    low level call does not give a way to provide host specific return values.
-
-    3) CONF is global, and it is read dynamically by the driver. So
-    providing host specific CONF to driver instances without race conditions
-    between the drivers are extremely hard especially if periodic tasks are
-    enabled.
-
-    The libvirt based functional test env under nova.tests.functional.libvirt
-    has better support to create asymmetric environments. So please consider
-    using that if possible instead.
-    """
-
-    PCI_ADDR_PF1 = '0000:01:00.0'
-    PCI_ADDR_PF1_VF1 = '0000:01:00.1'
-    PCI_ADDR_PF2 = '0000:02:00.0'
-    PCI_ADDR_PF2_VF1 = '0000:02:00.1'
-    PCI_ADDR_PF3 = '0000:03:00.0'
-    PCI_ADDR_PF3_VF1 = '0000:03:00.1'
-
-    # NOTE(gibi): Always use this fixture along with the
-    # EVEDriverWithPciResources to make the necessary configuration for the
-    # driver.
-    class EVEDriverWithPciResourcesConfigFixture(fixtures.Fixture):
-        def setUp(self):
-            super(EVEDriverWithPciResources.
-                  EVEDriverWithPciResourcesConfigFixture, self).setUp()
-            # Set device_spec before the compute node starts to match
-            # with the PCI devices reported by this eve driver.
-
-            # NOTE(gibi): 0000:01:00 is tagged to physnet1 and therefore not a
-            # match based on physnet to our sriov port
-            # 'port_with_sriov_resource_request' as the network of that port
-            # points to physnet2 with the attribute
-            # 'provider:physical_network'. Nova pci handling already enforces
-            # this rule.
-            #
-            # 0000:02:00 and 0000:03:00 are both tagged to physnet2 and
-            # therefore a good match for our sriov port based on physnet.
-            # Having two PFs on the same physnet will allow us to test the
-            # placement allocation - physical allocation matching based on the
-            # bandwidth allocation in the future.
-            CONF.set_override('device_spec', override=[
-                jsonutils.dumps(
-                    {
-                        "address": {
-                            "domain": "0000",
-                            "bus": "01",
-                            "slot": "00",
-                            "function": ".*"},
-                        "physical_network": "physnet1",
-                    }
-                ),
-                jsonutils.dumps(
-                    {
-                        "address": {
-                            "domain": "0000",
-                            "bus": "02",
-                            "slot": "00",
-                            "function": ".*"},
-                        "physical_network": "physnet2",
-                    }
-                ),
-                jsonutils.dumps(
-                    {
-                        "address": {
-                            "domain": "0000",
-                            "bus": "03",
-                            "slot": "00",
-                            "function": ".*"},
-                        "physical_network": "physnet2",
-                    }
-                ),
-            ],
-                             group='pci')
-
-            # These mocks should be removed after bug
-            # https://bugs.launchpad.net/nova/+bug/1961587 has been fixed and
-            # every SRIOV device related information is transferred through the
-            # virt driver and the PciDevice object instead of queried with
-            # sysfs calls by the network.neutron.API code.
-            self.useFixture(fixtures.MockPatch(
-                'nova.pci.utils.get_mac_by_pci_address',
-                return_value='52:54:00:1e:59:c6'))
-
-            self.useFixture(fixtures.MockPatch(
-                'nova.pci.utils.get_vf_num_by_pci_address',
-                return_value=1))
-
-    def get_available_resource(self, nodename):
-        host_status = super(
-            EVEDriverWithPciResources, self).get_available_resource(nodename)
-        # 01:00.0 - PF - ens1
-        #  |---- 01:00.1 - VF
-        #
-        # 02:00.0 - PF - ens2
-        #  |---- 02:00.1 - VF
-        #
-        # 03:00.0 - PF - ens3
-        #  |---- 03:00.1 - VF
-        host_status['pci_passthrough_devices'] = jsonutils.dumps([
-            {
-                'address': self.PCI_ADDR_PF1,
-                'product_id': 'eve-product_id',
-                'vendor_id': 'eve-vendor_id',
-                'status': 'available',
-                'dev_type': 'type-PF',
-                'parent_addr': None,
-                'numa_node': 0,
-                'label': 'eve-label',
-            },
-            {
-                'address': self.PCI_ADDR_PF1_VF1,
-                'product_id': 'eve-product_id',
-                'vendor_id': 'eve-vendor_id',
-                'status': 'available',
-                'dev_type': 'type-VF',
-                'parent_addr': self.PCI_ADDR_PF1,
-                'numa_node': 0,
-                'label': 'eve-label',
-                "parent_ifname": self._host + "-ens1",
-            },
-            {
-                'address': self.PCI_ADDR_PF2,
-                'product_id': 'eve-product_id',
-                'vendor_id': 'eve-vendor_id',
-                'status': 'available',
-                'dev_type': 'type-PF',
-                'parent_addr': None,
-                'numa_node': 0,
-                'label': 'eve-label',
-            },
-            {
-                'address': self.PCI_ADDR_PF2_VF1,
-                'product_id': 'eve-product_id',
-                'vendor_id': 'eve-vendor_id',
-                'status': 'available',
-                'dev_type': 'type-VF',
-                'parent_addr': self.PCI_ADDR_PF2,
-                'numa_node': 0,
-                'label': 'eve-label',
-                "parent_ifname": self._host + "-ens2",
-            },
-            {
-                'address': self.PCI_ADDR_PF3,
-                'product_id': 'eve-product_id',
-                'vendor_id': 'eve-vendor_id',
-                'status': 'available',
-                'dev_type': 'type-PF',
-                'parent_addr': None,
-                'numa_node': 0,
-                'label': 'eve-label',
-            },
-            {
-                'address': self.PCI_ADDR_PF3_VF1,
-                'product_id': 'eve-product_id',
-                'vendor_id': 'eve-vendor_id',
-                'status': 'available',
-                'dev_type': 'type-VF',
-                'parent_addr': self.PCI_ADDR_PF3,
-                'numa_node': 0,
-                'label': 'eve-label',
-                "parent_ifname": self._host + "-ens3",
-            },
-        ])
-        return host_status
-
-
-class EVELiveMigrateDriverWithPciResources(
-        EVELiveMigrateDriver, EVEDriverWithPciResources):
-    """EVEDriver derivative to handle force_complete and abort calls.
-
-    This module serves those tests that need to abort or force-complete
-    the live migration, thus the live migration will never be finished
-    without the force_complete_migration or delete_migration API calls.
-
-    """
-
-
-class EVEDriverWithCaching(EVEDriver):
-    def __init__(self, *a, **k):
-        super(EVEDriverWithCaching, self).__init__(*a, **k)
-        self.cached_images = set()
-
-    def cache_image(self, context, image_id):
-        if image_id in self.cached_images:
-            return False
-        else:
-            self.cached_images.add(image_id)
-            return True
-
-
-class EphEncryptionDriver(MediumEVEDriver):
-    capabilities = dict(
-        EVEDriver.capabilities,
-        supports_ephemeral_encryption=True)
-
-
-class EphEncryptionDriverLUKS(MediumEVEDriver):
-    capabilities = dict(
-        EVEDriver.capabilities,
-        supports_ephemeral_encryption=True,
-        supports_ephemeral_encryption_luks=True)
-
-
-class EphEncryptionDriverPLAIN(MediumEVEDriver):
-    capabilities = dict(
-        EVEDriver.capabilities,
-        supports_ephemeral_encryption=True,
-        supports_ephemeral_encryption_plain=True)
-
 
 class EVEDriverWithoutEVENodes(EVEDriver):
     """EVEDriver that behaves like a real single-node driver.
