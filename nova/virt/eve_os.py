@@ -27,8 +27,11 @@ import re
 import time
 
 import os_resource_classes as orc
+import os_vif
 import paramiko
 import pexpect
+import vif_plug_ovs.linux_net
+import vif_plug_ovs.linux_net
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from oslo_utils import versionutils
@@ -43,6 +46,9 @@ from nova import objects
 from nova.compute import power_state
 from nova.compute import task_states
 from nova.console import type as ctype
+from nova.i18n import _
+from nova.network import model
+from nova.network import os_vif_util
 from nova.objects import diagnostics as diagnostics_obj
 from nova.objects import fields as obj_fields
 from nova.objects import migrate_data
@@ -67,6 +73,15 @@ def eden_ssh():
                    pkey=pkey)
 
     return client
+
+
+# https://github.com/lf-edge/eden/blob/master/docs/tap.md#create-network-and-application
+EVE_TAP_NET = "tap-net"
+
+# bridge has connectivity with EVE-OS tap-net
+EVE_LOCAL_BRIDGE = "br-eve"
+
+EVE_VETH_MTU = 1450
 
 
 def eden_connect():
@@ -178,11 +193,13 @@ def eden_state(name):
     return (state)
 
 
-def eden_pod_deploy(name, vcpus, mem, disk, image):
+def eden_pod_deploy(name, vcpus, mem, disk, image, mac_addresses=None):
     ename = ''
     connect = eden_connect()
+    network_line = " ".join(["--networks=" + EVE_TAP_NET + ":" + mac for mac in mac_addresses])
     eden_cmd = './eden pod deploy --name=' + name + \
-               ' --cpus=' + str(vcpus) + ' --memory=' + str(mem) + 'MB' + \
+               ' --cpus=' + str(vcpus) + ' --memory=' + str(mem) + 'MB ' + \
+               network_line + \
                ' --disk-size=' + str(disk) + 'GB ' + image
 
     LOG.debug('EDEN cmd: ' + str(eden_cmd))
@@ -274,6 +291,45 @@ class Resources(object):
         }
 
 
+class EVEVIFDriver(object):
+    def __init__(self):
+        pass
+
+    def plug(self, instance, vif):
+        vif_type = vif['type']
+        if vif_type == model.VIF_TYPE_OVS:
+            vif = os_vif_util.nova_to_osvif_vif(vif)
+            instance = os_vif_util.nova_to_osvif_instance(instance)
+            LOG.warning("Plugging vif %(vif)s to %(instance)s", {'vif': vif, 'instance': instance})
+            os_vif.plug(vif, instance)
+            veth_1 = ("ev1%s" % vif.id)[:model.NIC_NAME_LEN]
+            veth_2 = ("ev2%s" % vif.id)[:model.NIC_NAME_LEN]
+            LOG.warning("Creating veth pair %(v1)s to %(v2)s",
+                        {'v1': veth_1, 'v2': veth_2})
+            vif_plug_ovs.linux_net.create_veth_pair(veth_1, veth_2, EVE_VETH_MTU)
+            vif_plug_ovs.linux_net.add_bridge_port(vif.bridge_name, veth_1)
+            vif_plug_ovs.linux_net.add_bridge_port(EVE_LOCAL_BRIDGE, veth_2)
+            LOG.warning("Plugging vif %(vif)s to %(instance)s done", {'vif': vif, 'instance': instance})
+        else:
+            reason = _("Failed to plug virtual interface: "
+                       "unexpected vif_type=%s") % vif_type
+            raise exception.VirtualInterfacePlugException(reason)
+
+    def unplug(self, instance, vif):
+        vif_type = vif['type']
+        if vif_type == model.VIF_TYPE_OVS:
+            vif = os_vif_util.nova_to_osvif_vif(vif)
+            instance = os_vif_util.nova_to_osvif_instance(instance)
+            veth_1 = ("ev1%s" % vif.id)[:model.NIC_NAME_LEN]
+            veth_2 = ("ev2%s" % vif.id)[:model.NIC_NAME_LEN]
+            vif_plug_ovs.linux_net.delete_net_dev(veth_1)
+            vif_plug_ovs.linux_net.delete_net_dev(veth_2)
+            os_vif.unplug(vif, instance)
+        else:
+            reason = _("unexpected vif_type=%s") % vif_type
+            raise exception.VirtualInterfaceUnplugException(reason=reason)
+
+
 class EVEDriver(driver.ComputeDriver):
     # These must match the traits in
     # nova.tests.functional.integrated_helpers.ProviderUsageBaseTestCase
@@ -331,6 +387,7 @@ class EVEDriver(driver.ComputeDriver):
         self.active_migrations = {}
         self._host = None
         self._nodes = None
+        self._vif_driver = EVEVIFDriver()
 
     def init_host(self, host):
         self._host = host
@@ -362,15 +419,25 @@ class EVEDriver(driver.ComputeDriver):
 
     def plug_vifs(self, instance, network_info):
         """Plug VIFs into networks."""
-        pass
+        LOG.warning("plug_vifs Plugging network_info %(network_info)s to %(instance)s",
+                    {'network_info': network_info, 'instance': instance})
+        if network_info:
+            for vif in network_info:
+                self._vif_driver.plug(instance, vif)
 
     def unplug_vifs(self, instance, network_info):
         """Unplug VIFs from networks."""
-        pass
+        LOG.warning("unplug_vifs unPlugging network_info %(network_info)s to %(instance)s",
+                    {'network_info': network_info, 'instance': instance})
+        if network_info:
+            for vif in network_info:
+                self._vif_driver.unplug(instance, vif)
 
     def spawn(self, context, instance, image_meta, injected_files,
               admin_password, allocations, network_info=None,
               block_device_info=None, power_on=True, accel_info=None):
+
+        mac_addresses = []
 
         if network_info:
             for vif in network_info:
@@ -380,6 +447,7 @@ class EVEDriver(driver.ComputeDriver):
                 # store the vif as attached so we can allow detaching it later
                 # with a detach_interface() call.
                 self._interfaces[vif['id']] = vif
+                mac_addresses.append(vif['address'])
 
         uuid = instance.uuid
         ename = instance.display_name
@@ -411,13 +479,16 @@ class EVEDriver(driver.ComputeDriver):
         scp = SCPClient(connect.get_transport())
         scp.put(image_path, eden_image_path)
 
+        self.plug_vifs(instance, network_info)
+
         ename = eden_pod_deploy(ename, flavor.vcpus, flavor.memory_mb,
-                                flavor.root_gb, eden_image_path)
+                                flavor.root_gb, eden_image_path, mac_addresses)
 
     def destroy(self, context, instance, network_info, block_device_info=None,
                 destroy_disks=True, destroy_secrets=True):
         key = instance.uuid
         name = instance.display_name
+        self.unplug_vifs(instance, network_info)
         if key in self.instances:
             name = eden_pod_delete(name)
             flavor = instance.flavor
@@ -506,11 +577,13 @@ class EVEDriver(driver.ComputeDriver):
             raise exception.InstanceNotFound(instance_id=instance.uuid)
 
     def power_on(self, context, instance, network_info,
-                 block_device_info=None, accel_info=None):
+                 block_device_info=None, accel_info=None, should_plug_vifs=True):
         if instance.uuid in self.instances:
             self.instances[instance.uuid].state = power_state.RUNNING
         else:
             raise exception.InstanceNotFound(instance_id=instance.uuid)
+        if should_plug_vifs:
+            self.plug_vifs(instance, network_info)
 
     def trigger_crash_dump(self, instance):
         pass
