@@ -22,43 +22,39 @@ A EVE-OS hypervisor+api.
 
 import collections
 import contextlib
-import time
-import uuid
-import re
 import os
+import re
+import time
+
+import os_resource_classes as orc
 import paramiko
 import pexpect
-import time
-from scp import SCPClient
-
-import fixtures
-import os_resource_classes as orc
 from oslo_log import log as logging
 from oslo_serialization import jsonutils
-from oslo_utils.fixture import uuidsentinel as uuids
 from oslo_utils import versionutils
+from oslo_utils.fixture import uuidsentinel as uuids
+from scp import SCPClient
 
-from nova.compute import power_state
-from nova.compute import task_states
-from nova.compute import vm_states
 import nova.conf
-from nova.console import type as ctype
+import nova.virt.node
 from nova import context as nova_context
 from nova import exception
 from nova import objects
+from nova.compute import power_state
+from nova.compute import task_states
+from nova.console import type as ctype
 from nova.objects import diagnostics as diagnostics_obj
 from nova.objects import fields as obj_fields
 from nova.objects import migrate_data
 from nova.virt import driver
 from nova.virt import hardware
 from nova.virt import images
-from nova.virt.ironic import driver as ironic
-import nova.virt.node
 from nova.virt import virtapi
 
 CONF = nova.conf.CONF
 
 LOG = logging.getLogger(__name__)
+
 
 def eden_ssh():
     client = paramiko.SSHClient()
@@ -69,8 +65,9 @@ def eden_ssh():
                    port=int(CONF.eve_os.eden_port),
                    username=CONF.eve_os.eden_user,
                    pkey=pkey)
-        
+
     return client
+
 
 def eden_connect():
     LOG.debug('EDEN CONF: ')
@@ -90,10 +87,10 @@ def eden_connect():
                 raise exception.HypervisorUnavailable()
         # Copy SSH key to EDEN host
         cmd = "ssh-copy-id -f -p %s -i %s %s@%s" % \
-            (CONF.eve_os.eden_port,
-             CONF.eve_os.eden_key_file,
-             CONF.eve_os.eden_user,
-             CONF.eve_os.eden_host)
+              (CONF.eve_os.eden_port,
+               CONF.eve_os.eden_key_file,
+               CONF.eve_os.eden_user,
+               CONF.eve_os.eden_host)
         LOG.debug('EDEN cmd: ' + cmd)
         child = pexpect.spawn(cmd)
         try:
@@ -106,8 +103,9 @@ def eden_connect():
             client = eden_ssh()
         except:
             raise exception.HypervisorUnavailable()
-        
+
     return client
+
 
 def eden_status():
     state = power_state.SHUTDOWN
@@ -123,9 +121,10 @@ def eden_status():
         if stderr:
             out = stderr.read().decode("utf-8")
             LOG.debug('EDEN stderr: ' + out)
-            
+
     LOG.debug('EDEN status: ' + str(state))
-    return(state)
+    return (state)
+
 
 def eden_start():
     connect = eden_connect()
@@ -138,8 +137,9 @@ def eden_start():
         if stderr:
             out = stderr.read().decode("utf-8")
             LOG.debug('EDEN stderr: ' + out)
-            
-        return(stdout.channel.recv_exit_status())
+
+        return (stdout.channel.recv_exit_status())
+
 
 def eden_stop():
     connect = eden_connect()
@@ -152,8 +152,9 @@ def eden_stop():
         if stderr:
             out = stderr.read().decode("utf-8")
             LOG.debug('EDEN stderr: ' + out)
-            
-        return(stdout.channel.recv_exit_status())
+
+        return (stdout.channel.recv_exit_status())
+
 
 def eden_state(name):
     state = None
@@ -174,17 +175,18 @@ def eden_state(name):
             out = stderr.read().decode("utf-8")
             LOG.debug('EDEN stderr: ' + out)
 
-    return(state)
+    return (state)
+
 
 def eden_pod_deploy(name, vcpus, mem, disk, image):
-    ename=''
+    ename = ''
     connect = eden_connect()
     eden_cmd = './eden pod deploy --name=' + name + \
-        ' --cpus=' + str(vcpus) + ' --memory=' + str(mem)+'MB' + \
-        ' --disk-size=' + str(disk)+'GB ' + image
-    
+               ' --cpus=' + str(vcpus) + ' --memory=' + str(mem) + 'MB' + \
+               ' --disk-size=' + str(disk) + 'GB ' + image
+
     LOG.debug('EDEN cmd: ' + str(eden_cmd))
-    
+
     with connect:
         stdin, stdout, stderr = connect.exec_command(
             'cd ' + CONF.eve_os.eden_dir + '; ' + eden_cmd)
@@ -194,30 +196,31 @@ def eden_pod_deploy(name, vcpus, mem, disk, image):
             search = re.search("INFO\[\d*\] deploy pod (.*) with .* request sent", out)
             if search:
                 ename = search.group(1)
-                return(name)
+                return (name)
         if stderr:
             out = stderr.read().decode("utf-8")
             LOG.debug('EDEN stderr: ' + out)
 
     return ename
 
+
 def eden_pod_delete(name):
-    ename=''
+    ename = ''
     connect = eden_connect()
     eden_cmd = './eden pod delete ' + name
 
     LOG.debug('EDEN cmd: ' + str(eden_cmd))
-    
+
     with connect:
         stdin, stdout, stderr = connect.exec_command(
             'cd ' + CONF.eve_os.eden_dir + '; ' + eden_cmd)
         if stdout:
             out = stdout.read().decode("utf-8")
             LOG.debug('EDEN stdout: ' + out)
-            search = re.search("INFO\[\d*\] app (.*) delete done",out)
+            search = re.search("INFO\[\d*\] app (.*) delete done", out)
             if search:
                 ename = search.group(1)
-                return(name)
+                return (name)
         if stderr:
             out = stderr.read().decode("utf-8")
             LOG.debug('EDEN stderr: ' + out)
@@ -294,7 +297,7 @@ class EVEDriver(driver.ComputeDriver):
         "supports_image_type_qcow2": True,
         "supports_image_type_docker": True,
         "supports_image_type_vhd": False,
-        }
+    }
 
     # Since we don't have a real hypervisor, pretend we have lots of
     # disk and ram so this driver can be used to test large instances.
@@ -322,7 +325,7 @@ class EVEDriver(driver.ComputeDriver):
                 obj_fields.HVType.EVE,
                 obj_fields.VMMode.HVM)],
             'numa_topology': None,
-          }
+        }
         self._mounts = {}
         self._interfaces = {}
         self.active_migrations = {}
@@ -347,7 +350,7 @@ class EVEDriver(driver.ComputeDriver):
         if instance.uuid not in self.instances:
             raise exception.InstanceNotFound(instance_id=instance.uuid)
         i = self.instances[instance.uuid]
-        #return hardware.InstanceInfo(state=i.state)
+        # return hardware.InstanceInfo(state=i.state)
         state = eden_state(i.ename)
         return hardware.InstanceInfo(state=state)
 
@@ -407,10 +410,10 @@ class EVEDriver(driver.ComputeDriver):
         connect = eden_connect()
         scp = SCPClient(connect.get_transport())
         scp.put(image_path, eden_image_path)
-            
+
         ename = eden_pod_deploy(ename, flavor.vcpus, flavor.memory_mb,
                                 flavor.root_gb, eden_image_path)
-        
+
     def destroy(self, context, instance, network_info, block_device_info=None,
                 destroy_disks=True, destroy_secrets=True):
         key = instance.uuid
@@ -464,9 +467,9 @@ class EVEDriver(driver.ComputeDriver):
         pass
 
     def unrescue(
-        self,
-        context: nova_context.RequestContext,
-        instance: 'objects.Instance',
+            self,
+            context: nova_context.RequestContext,
+            instance: 'objects.Instance',
     ):
         self.instances[instance.uuid].state = power_state.RUNNING
 
@@ -570,7 +573,7 @@ class EVEDriver(driver.ComputeDriver):
     def attach_interface(self, context, instance, image_meta, vif):
         if vif['id'] in self._interfaces:
             raise exception.InterfaceAttachFailed(
-                    instance_uuid=instance.uuid)
+                instance_uuid=instance.uuid)
         self._interfaces[vif['id']] = vif
 
     def detach_interface(self, context, instance, vif):
@@ -578,7 +581,7 @@ class EVEDriver(driver.ComputeDriver):
             del self._interfaces[vif['id']]
         except KeyError:
             raise exception.InterfaceDetachFailed(
-                    instance_uuid=instance.uuid)
+                instance_uuid=instance.uuid)
 
     def get_diagnostics(self, instance):
         return {'cpu0_time': 17300000000,
@@ -596,7 +599,7 @@ class EVEDriver(driver.ComputeDriver):
                 'vnet1_tx_drop': 0,
                 'vnet1_tx_errors': 0,
                 'vnet1_tx_packets': 662,
-        }
+                }
 
     def get_instance_diagnostics(self, instance):
         diags = diagnostics_obj.Diagnostics(
@@ -612,7 +615,7 @@ class EVEDriver(driver.ComputeDriver):
                       tx_octets=140208,
                       tx_errors=400,
                       tx_drop=500,
-                      tx_packets = 662,
+                      tx_packets=662,
                       tx_rate=600)
         diags.add_disk(read_bytes=262144,
                        read_requests=112,
@@ -630,7 +633,7 @@ class EVEDriver(driver.ComputeDriver):
         volusage = []
         if compute_host_bdms:
             volusage = [{'volume': compute_host_bdms[0][
-                                       'instance_bdms'][0]['volume_id'],
+                'instance_bdms'][0]['volume_id'],
                          'instance': compute_host_bdms[0]['instance'],
                          'rd_bytes': 0,
                          'rd_req': 0,
@@ -641,9 +644,9 @@ class EVEDriver(driver.ComputeDriver):
 
     def get_host_cpu_stats(self):
         stats = {'kernel': 5664160000000,
-                'idle': 1592705190000000,
-                'user': 26728850000000,
-                'iowait': 6121490000000}
+                 'idle': 1592705190000000,
+                 'user': 26728850000000,
+                 'iowait': 6121490000000}
         stats['frequency'] = 800
         return stats
 
@@ -694,8 +697,8 @@ class EVEDriver(driver.ComputeDriver):
                 'cores': 1,
                 'threads': 1,
                 'sockets': 4,
-                }),
-            ])
+            }),
+        ])
         if nodename not in self.get_available_nodes():
             return {}
 
@@ -755,7 +758,7 @@ class EVEDriver(driver.ComputeDriver):
                        post_method, recover_method, block_migration=False,
                        migrate_data=None):
         post_method(context, instance, dest, block_migration,
-                            migrate_data)
+                    migrate_data)
         return
 
     def live_migration_force_complete(self, instance):
@@ -881,6 +884,7 @@ class EVEVirtAPI(virtapi.VirtAPI):
 
     def update_compute_provider_status(self, context, rp_uuid, enabled):
         pass
+
 
 class EVEDriverWithoutEVENodes(EVEDriver):
     """EVEDriver that behaves like a real single-node driver.
