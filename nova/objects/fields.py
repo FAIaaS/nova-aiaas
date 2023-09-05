@@ -817,8 +817,9 @@ class HypervisorDriver(BaseNovaEnum):
     VMWAREAPI = "vmwareapi"
     IRONIC = "ironic"
     HYPERV = "hyperv"
+    EVE_OS = 'eve_os'
 
-    ALL = (LIBVIRT, XENAPI, VMWAREAPI, IRONIC, HYPERV)
+    ALL = (LIBVIRT, XENAPI, VMWAREAPI, IRONIC, HYPERV, EVE_OS)
 
 
 class PointerModelType(BaseNovaEnum):
