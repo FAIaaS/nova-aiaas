@@ -204,102 +204,6 @@ def eden_state(name):
     LOG.debug('EDEN "%s" state: %s' % (name, power_state.STATE_MAP[state]))
     return(state)
 
-def eden_diag():
-    LOG.debug("EDEN eden_diag_app")
-    diag = {'cpu0_time': 17300000000,
-            'memory': 524288,
-            #'vda_errors': -1,
-            #'vda_read': 262144,
-            #'vda_read_req': 112,
-            #'vda_write': 5778432,
-            #'vda_write_req': 488,
-            'vnet1_rx': 2070139,
-            #'vnet1_rx_drop': 0,
-            #'vnet1_rx_errors': 0,
-            'vnet1_rx_packets': 26701,
-            'vnet1_tx': 140208,
-            #'vnet1_tx_drop': 0,
-            #'vnet1_tx_errors': 0,
-            #'vnet1_tx_packets': 662,
-            }
-    return diag
-
-def eden_diag_app(name):
-    LOG.debug("EDEN eden_diag_app")
-    diags = diagnostics_obj.Diagnostics()
-    uptime=0
-    CPUUsage = 0
-    mac = ''
-    rxb = 0
-    txb = 0
-    rxp = 0
-    txp = 0
-    mmax = 0
-    mused = 0
-
-    connect = eden_connect()
-    with connect:
-        diags = diagnostics_obj.Diagnostics(
-        state=power_state.STATE_MAP[eden_state(name)],
-        driver='eve_os', #hypervisor='eve_os',
-        hypervisor_os='linux',
-        uptime=46664, config_drive=True)
-        stdin, stdout, stderr = connect.exec_command(
-            'cd ' + CONF.eve_os.eden_dir + '; ./eden pod ps --format=json')
-        if stdout:
-            out = stdout.read().decode("utf-8")
-            LOG.debug('EDEN stdout: ' + out)
-            apps = json.loads(out)
-            for app in apps:
-                if app['Name'] == name:
-                    CPUUsage = float(app['CPUUsage'])
-                    mac = app["Macs"][0]
-        if stderr:
-            out = stderr.read().decode("utf-8")
-            LOG.debug('EDEN stderr: ' + out)
-        
-        stdin, stdout, stderr = connect.exec_command(
-            'cd ' + CONF.eve_os.eden_dir + '; ./eden metric --format=json --tail 1')
-        if stdout:
-            out = stdout.read().decode("utf-8")
-            LOG.debug('EDEN stdout: ' + out)
-            apps = json.loads(out)['am']
-            for app in apps:
-                if app['AppName'] == name:
-                    t = app['cpu']['upTime']
-                    # Convert to seconds
-                    t = t.split('T')[-1][:-1].split(':')
-                    uptime = int(t[0])*3600 + int(t[1])*60 + float(t[2])
-                    nw = app['network'][0]
-                    txb = int(nw['txBytes'])
-                    rxb = int(nw['rxBytes'])
-                    txp = int(nw['txPkts'])
-                    rxp = int(nw['txPkts'])
-                    mmax = int(app['memory']['availMem'])
-                    mused = int(app['memory']['usedMem'])
-        if stderr:
-            out = stderr.read().decode("utf-8")
-            LOG.debug('EDEN stderr: ' + out)
-
-    diags.add_cpu(id=0, time=uptime, utilisation=CPUUsage)
-    diags.add_nic(mac_address=mac,
-                  rx_octets=rxb,
-                  #rx_errors=100,
-                  #rx_drop=200,
-                  rx_packets=rxp,
-                  #rx_rate=300,
-                  tx_octets=txb,
-                  #tx_errors=400,
-                  #tx_drop=500,
-                  tx_packets=txp,
-                  #tx_rate=600
-                  )
-    diags.memory_details = diagnostics_obj.MemoryDiagnostics(
-        maximum=mmax, used=mused)
-
-    LOG.debug('EDEN "%s" diags: %s' % (name, str(diags)))
-    return(diags)
-
 def eden_pod_deploy(name, vcpus, mem, disk, image):
     LOG.debug("EDEN eden_pod_deploy")
     ename=''
@@ -398,6 +302,168 @@ def eden_pod_stop(name):
 
     return ename
 
+def eden_dinfo():
+    LOG.debug("EDEN eden_dinfo")
+    connect = eden_connect()
+    info = None
+    with connect:
+        stdin, stdout, stderr = connect.exec_command(
+            'cd ' + CONF.eve_os.eden_dir + '; ./eden info --format json')
+        if stdout:
+            out = stdout.read().decode("utf-8")
+            #LOG.debug('EDEN stdout: ' + out)
+            out = out.split('\n')
+            infos = len(out)
+            for i in range(0, infos):
+                try:
+                    info = json.loads(out[infos - 1 - i])
+                    if 'dinfo' in info:
+                        info = info["dinfo"]
+                        break
+                except json.decoder.JSONDecodeError:
+                    continue
+        if stderr:
+            out = stderr.read().decode("utf-8")
+            LOG.debug('EDEN stderr: ' + out)
+
+    return info
+
+def eden_metric():
+    LOG.debug("EDEN eden_metric")
+    metric = None
+    connect = eden_connect()
+    with connect:        
+        stdin, stdout, stderr = connect.exec_command(
+            'cd ' + CONF.eve_os.eden_dir + \
+            '; ./eden metric --format=json --tail 1')
+        if stdout:
+            out = stdout.read().decode("utf-8")
+            LOG.debug('EDEN stdout: ' + out)
+            metric = json.loads(out)
+        if stderr:
+            out = stderr.read().decode("utf-8")
+            LOG.debug('EDEN stderr: ' + out)
+
+    return metric
+
+def eden_pod_ps():
+    LOG.debug("EDEN eden_pod_ps")
+    apps = None
+    connect = eden_connect()
+    with connect:
+        stdin, stdout, stderr = connect.exec_command(
+            'cd ' + CONF.eve_os.eden_dir + '; ./eden pod ps --format=json')
+        if stdout:
+            out = stdout.read().decode("utf-8")
+            LOG.debug('EDEN stdout: ' + out)
+            apps = json.loads(out)
+        if stderr:
+            out = stderr.read().decode("utf-8")
+            LOG.debug('EDEN stderr: ' + out)
+
+    return apps
+
+def eden_cpu_info():
+    info = eden_dinfo()
+    cpu_info = collections.OrderedDict([
+        ('arch', info["machineArch"]),
+        ('model',  info["minfo"]["productName"]),
+        ('vendor', info["minfo"]["manufacturer"]),
+        ('topology', {
+            'cores': info["ncpu"],
+            #'threads': 1,
+            #'sockets': 4,
+        }),
+    ])
+
+    return cpu_info
+
+def eden_diag():
+    LOG.debug("EDEN eden_diag")
+    diag = {}
+    info = eden_dinfo()
+    diag['cpu0_time'] = datetime.datetime.now() - \
+        datetime.datetime.strptime(info["bootTime"],
+                                   "%Y-%m-%dT%H:%M:%SZ")
+    diag['memory'] = int(info["memory"])
+    
+    dm = eden_metric()['dm']
+    #'vda_errors': -1,
+    #'vda_read': 262144,
+    #'vda_read_req': 112,
+    #'vda_write': 5778432,
+    #'vda_write_req': 488,
+    diag['vnet1_rx'] = int(dm[0]["rxBytes"])
+    #'vnet1_rx_drop': 0,
+    #'vnet1_rx_errors': 0,
+    diag['vnet1_rx_packets'] = int(dm[0]["rxPkts"])
+    diag['vnet1_tx'] = int(dm[0]["txBytes"])
+    #'vnet1_tx_drop': 0,
+    #'vnet1_tx_errors': 0,
+    diag['vnet1_tx_packets'] = int(dm[0]["txPkts"])
+    
+    return diag
+
+def eden_diag_app(name):
+    LOG.debug("EDEN eden_diag_app")
+    diags = diagnostics_obj.Diagnostics(
+        state=power_state.STATE_MAP[eden_state(name)],
+        driver='eve_os', #hypervisor='eve_os',
+        hypervisor_os='linux',
+        uptime=46664, config_drive=True)
+
+    uptime=0
+    CPUUsage = 0
+    mac = ''
+    rxb = 0
+    txb = 0
+    rxp = 0
+    txp = 0
+    mmax = 0
+    mused = 0
+
+    apps = eden_pod_ps()
+    for app in apps:
+        if app['Name'] == name:
+            CPUUsage = float(app['CPUUsage'])
+            mac = app["Macs"][0]
+            
+    metric = eden_metric()
+    if 'am' in metric:
+        apps = metric['am']
+
+        for app in apps:
+            if app['AppName'] == name:
+                t = app['cpu']['upTime']
+                # Convert to seconds
+                t = t.split('T')[-1][:-1].split(':')
+                uptime = int(t[0])*3600 + int(t[1])*60 + float(t[2])
+                nw = app['network'][0]
+                txb = int(nw['txBytes'])
+                rxb = int(nw['rxBytes'])
+                txp = int(nw['txPkts'])
+                rxp = int(nw['txPkts'])
+                mmax = int(app['memory']['availMem'])
+                mused = int(app['memory']['usedMem'])
+
+        diags.add_cpu(id=0, time=uptime, utilisation=CPUUsage)
+        diags.add_nic(mac_address=mac,
+                      rx_octets=rxb,
+                      #rx_errors=100,
+                      #rx_drop=200,
+                      rx_packets=rxp,
+                      #rx_rate=300,
+                      tx_octets=txb,
+                      #tx_errors=400,
+                      #tx_drop=500,
+                      tx_packets=txp,
+                      #tx_rate=600
+                      )
+        diags.memory_details = diagnostics_obj.MemoryDiagnostics(
+            maximum=mmax, used=mused)
+
+    LOG.debug('EDEN "%s" diags: %s' % (name, str(diags)))
+    return(diags)
 
 class Resources(object):
     vcpus = 0
@@ -729,22 +795,30 @@ class EVEDriver(driver.ComputeDriver):
            disk and ram.
         """
         LOG.debug("EVE_OS get_available_resource")
-        cpu_info = collections.OrderedDict([
-            ('arch', 'x86_64'),
-            ('model', 'Nehalem'),
-            ('vendor', 'Intel'),
-            ('features', ['pge', 'clflush']),
-            ('topology', {
-                'cores': 1,
-                'threads': 1,
-                'sockets': 4,
-                }),
-            ])
+        cpu_info = eden_cpu_info()
+
         if nodename not in self.get_available_nodes():
             return {}
 
         host_status = self.host_status_base.copy()
-        host_status.update(self.resources.dump())
+        dinfo = eden_dinfo()
+        metric = eden_metric()
+        dm = metric['dm']
+        if 'am' in metric:
+            am = metric['am']
+        else:
+            am = []
+
+        resources = {
+            'vcpus': dinfo['ncpu'],
+            'memory_mb': dm['memory']["availMem"],
+            'local_gb': int(dinfo["storage"]),
+            'vcpus_used': len(am),
+            'memory_mb_used': dm['memory']["usedMem"],
+            'local_gb_used': 0
+        }
+        host_status.update(resources)
+        #host_status.update(self.resources.dump())
         host_status['hypervisor_hostname'] = nodename
         host_status['host_hostname'] = nodename
         host_status['host_name_label'] = nodename
@@ -765,32 +839,35 @@ class EVEDriver(driver.ComputeDriver):
         LOG.debug("EVE_OS update_provider_tree")
         inv = provider_tree.data(nodename).inventory
         ratios = self._get_allocation_ratios(inv)
+
+        info = eden_dinfo()
         inventory = {
             'VCPU': {
-                'total': self.vcpus,
+                'total': info["ncpu"],
                 'min_unit': 1,
-                'max_unit': self.vcpus,
+                'max_unit': info["ncpu"],
                 'step_size': 1,
                 'allocation_ratio': ratios[orc.VCPU],
                 'reserved': CONF.reserved_host_cpus,
             },
             'MEMORY_MB': {
-                'total': self.memory_mb,
+                'total': int(info["memory"]),
                 'min_unit': 1,
-                'max_unit': self.memory_mb,
+                'max_unit': int(info["memory"]),
                 'step_size': 1,
                 'allocation_ratio': ratios[orc.MEMORY_MB],
                 'reserved': CONF.reserved_host_memory_mb,
             },
             'DISK_GB': {
-                'total': self.local_gb,
+                'total': int(info["storage"]),
                 'min_unit': 1,
-                'max_unit': self.local_gb,
+                'max_unit': int(info["storage"]),
                 'step_size': 1,
                 'allocation_ratio': ratios[orc.DISK_GB],
                 'reserved': self._get_reserved_host_disk_gb_from_config(),
             },
         }
+
         provider_tree.update_inventory(nodename, inventory)
 
     def get_instance_disk_info(self, instance, block_device_info=None):
