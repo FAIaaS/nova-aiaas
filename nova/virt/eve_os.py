@@ -17,14 +17,19 @@
 #    under the License.
 
 """
-A EVE-OS hypervisor+api.
+A EVE-OS hypervisor.
 """
 
 import collections
 import contextlib
+import datetime
 import os
+import time
+import uuid
 import re
 import time
+import json
+import fixtures
 
 import os_resource_classes as orc
 import os_vif
@@ -41,10 +46,12 @@ from scp import SCPClient
 import nova.conf
 import nova.virt.node
 from nova import context as nova_context
+from nova import objects as nova_objects
 from nova import exception
 from nova import objects
 from nova.compute import power_state
 from nova.compute import task_states
+from nova.compute import vm_states
 from nova.console import type as ctype
 from nova.i18n import _
 from nova.network import model
@@ -55,6 +62,8 @@ from nova.objects import migrate_data
 from nova.virt import driver
 from nova.virt import hardware
 from nova.virt import images
+from nova.virt.ironic import driver as ironic
+import nova.virt.node
 from nova.virt import virtapi
 
 CONF = nova.conf.CONF
@@ -74,7 +83,6 @@ def eden_ssh():
 
     return client
 
-
 # https://github.com/lf-edge/eden/blob/master/docs/tap.md#create-network-and-application
 EVE_TAP_NET = "tap-net"
 
@@ -85,6 +93,7 @@ EVE_VETH_MTU = 1450
 
 
 def eden_connect():
+    LOG.debug("EDEN eden_connect")
     LOG.debug('EDEN CONF: ')
     for i in CONF.eve_os.items():
         LOG.debug(i)
@@ -121,27 +130,8 @@ def eden_connect():
 
     return client
 
-
-def eden_status():
-    state = power_state.SHUTDOWN
-    connect = eden_connect()
-    with connect:
-        stdin, stdout, stderr = connect.exec_command(
-            'cd ' + CONF.eve_os.eden_dir + '; ./eden status')
-        if stdout:
-            out = stdout.read().decode("utf-8")
-            LOG.debug('EDEN stdout: ' + out)
-            state = 'EVE on Qemu status: running with pid ' in out \
-                if power_state.RUNNING else power_state.SHUTDOWN
-        if stderr:
-            out = stderr.read().decode("utf-8")
-            LOG.debug('EDEN stderr: ' + out)
-
-    LOG.debug('EDEN status: ' + str(state))
-    return (state)
-
-
 def eden_start():
+    LOG.debug("EDEN eden_start")
     connect = eden_connect()
     with connect:
         stdin, stdout, stderr = connect.exec_command(
@@ -155,8 +145,8 @@ def eden_start():
 
         return (stdout.channel.recv_exit_status())
 
-
 def eden_stop():
+    LOG.debug("EDEN eden_stop")
     connect = eden_connect()
     with connect:
         stdin, stdout, stderr = connect.exec_command(
@@ -170,8 +160,49 @@ def eden_stop():
 
         return (stdout.channel.recv_exit_status())
 
+def eden_status():
+    LOG.debug("EDEN eden_status")
+    state = power_state.SHUTDOWN
+    connect = eden_connect()
+    with connect:
+        stdin, stdout, stderr = connect.exec_command(
+            'cd ' + CONF.eve_os.eden_dir + '; ./eden status')
+        if stdout:
+            out = stdout.read().decode("utf-8")
+            LOG.debug('EDEN stdout: ' + out)
+            state = 'EVE on Qemu status: running with pid ' in out \
+                if power_state.RUNNING else power_state.SHUTDOWN
+        if stderr:
+            out = stderr.read().decode("utf-8")
+            LOG.debug('EDEN stderr: ' + out)
+            
+    LOG.debug('EDEN status: ' + power_state.STATE_MAP[state])
+    return(state)
+
+def eden_uuids_list():
+    LOG.debug("EDEN eden_uuids_list")    
+    uuids = []
+    connect = eden_connect()
+    with connect:
+        stdin, stdout, stderr = connect.exec_command(
+            'cd ' + CONF.eve_os.eden_dir + '; ./eden pod ps')
+        if stdout:
+            out = stdout.read().decode("utf-8").split('\n')
+            LOG.debug('EDEN stdout: ' + str(out))
+            for app in out[1:]:
+                app = app.split()
+                print("EDEN app: " + str(app))
+                if len(app):
+                    uuids.append(app[0])
+        if stderr:
+            out = stderr.read().decode("utf-8")
+            LOG.debug('EDEN stderr: ' + out)
+ 
+    LOG.debug('EDEN uuids: ' + str(uuids))
+    return(uuids)
 
 def eden_state(name):
+    LOG.debug("EDEN eden_state")
     state = None
     connect = eden_connect()
     with connect:
@@ -180,9 +211,9 @@ def eden_state(name):
         if stdout:
             out = stdout.read().decode("utf-8")
             LOG.debug('EDEN stdout: ' + out)
-            search = re.search("^%s " % name, out, re.MULTILINE)
+            search = re.search("^%s\s.*(RUNNING)$" % name, out, re.MULTILINE)
             if search:
-                ename = search.group(1)
+                ename = search.group(0)
                 state = power_state.RUNNING
             else:
                 state = power_state.SHUTDOWN
@@ -190,13 +221,15 @@ def eden_state(name):
             out = stderr.read().decode("utf-8")
             LOG.debug('EDEN stderr: ' + out)
 
+    LOG.debug('EDEN "%s" state: %s' % (name, power_state.STATE_MAP[state]))
     return (state)
 
-
 def eden_pod_deploy(name, vcpus, mem, disk, image, mac_addresses=None):
+    LOG.debug("EDEN eden_pod_deploy")
     ename = ''
     connect = eden_connect()
-    network_line = " ".join(["--networks=" + EVE_TAP_NET + ":" + mac for mac in mac_addresses])
+    network_line = " ".join(["--networks=" + EVE_TAP_NET + ":" + \
+                             mac for mac in mac_addresses])
     eden_cmd = './eden pod deploy --name=' + name + \
                ' --cpus=' + str(vcpus) + ' --memory=' + str(mem) + 'MB ' + \
                network_line + \
@@ -213,7 +246,7 @@ def eden_pod_deploy(name, vcpus, mem, disk, image, mac_addresses=None):
             search = re.search("INFO\[\d*\] deploy pod (.*) with .* request sent", out)
             if search:
                 ename = search.group(1)
-                return (name)
+                return(name)
         if stderr:
             out = stderr.read().decode("utf-8")
             LOG.debug('EDEN stderr: ' + out)
@@ -222,6 +255,7 @@ def eden_pod_deploy(name, vcpus, mem, disk, image, mac_addresses=None):
 
 
 def eden_pod_delete(name):
+    LOG.debug("EDEN eden_pod_delete")
     ename = ''
     connect = eden_connect()
     eden_cmd = './eden pod delete ' + name
@@ -244,17 +278,216 @@ def eden_pod_delete(name):
 
     return ename
 
+def eden_pod_start(name):
+    LOG.debug("EDEN eden_pod_start")    
+    ename=''
+    connect = eden_connect()
+    eden_cmd = './eden pod start ' + name
 
-class EVEInstance(object):
+    LOG.debug('EDEN cmd: ' + str(eden_cmd))
+    
+    with connect:
+        stdin, stdout, stderr = connect.exec_command(
+            'cd ' + CONF.eve_os.eden_dir + '; ' + eden_cmd)
+        if stdout:
+            out = stdout.read().decode("utf-8")
+            LOG.debug('EDEN stdout: ' + out)
+            search = re.search("INFO\[\d*\] app (.*) start done",out)
+            if search:
+                ename = search.group(1)
+                return(name)
+        if stderr:
+            out = stderr.read().decode("utf-8")
+            LOG.debug('EDEN stderr: ' + out)
 
-    def __init__(self, name, ename, state, uuid):
-        self.name = name
-        self.ename = ename
-        self.state = state
-        self.uuid = uuid
+    return ename
 
-    def __getitem__(self, key):
-        return getattr(self, key)
+def eden_pod_stop(name):
+    LOG.debug("EDEN eden_pod_stop")
+    ename=''
+    connect = eden_connect()
+    eden_cmd = './eden pod stop ' + name
+
+    LOG.debug('EDEN cmd: ' + str(eden_cmd))
+    
+    with connect:
+        stdin, stdout, stderr = connect.exec_command(
+            'cd ' + CONF.eve_os.eden_dir + '; ' + eden_cmd)
+        if stdout:
+            out = stdout.read().decode("utf-8")
+            LOG.debug('EDEN stdout: ' + out)
+            search = re.search("INFO\[\d*\] app (.*) stop done",out)
+            if search:
+                ename = search.group(1)
+                return(name)
+        if stderr:
+            out = stderr.read().decode("utf-8")
+            LOG.debug('EDEN stderr: ' + out)
+
+    return ename
+
+def eden_dinfo():
+    LOG.debug("EDEN eden_dinfo")
+    connect = eden_connect()
+    info = None
+    with connect:
+        stdin, stdout, stderr = connect.exec_command(
+            'cd ' + CONF.eve_os.eden_dir + '; ./eden info --format json')
+        if stdout:
+            out = stdout.read().decode("utf-8")
+            #LOG.debug('EDEN stdout: ' + out)
+            out = out.split('\n')
+            infos = len(out)
+            for i in range(0, infos):
+                try:
+                    info = json.loads(out[infos - 1 - i])
+                    if 'dinfo' in info:
+                        info = info["dinfo"]
+                        break
+                except json.decoder.JSONDecodeError:
+                    continue
+        if stderr:
+            out = stderr.read().decode("utf-8")
+            LOG.debug('EDEN stderr: ' + out)
+
+    return info
+
+def eden_metric():
+    LOG.debug("EDEN eden_metric")
+    metric = None
+    connect = eden_connect()
+    with connect:        
+        stdin, stdout, stderr = connect.exec_command(
+            'cd ' + CONF.eve_os.eden_dir + \
+            '; ./eden metric --format=json --tail 1')
+        if stdout:
+            out = stdout.read().decode("utf-8")
+            LOG.debug('EDEN stdout: ' + out)
+            metric = json.loads(out)
+        if stderr:
+            out = stderr.read().decode("utf-8")
+            LOG.debug('EDEN stderr: ' + out)
+
+    return metric
+
+def eden_pod_ps():
+    LOG.debug("EDEN eden_pod_ps")
+    apps = None
+    connect = eden_connect()
+    with connect:
+        stdin, stdout, stderr = connect.exec_command(
+            'cd ' + CONF.eve_os.eden_dir + '; ./eden pod ps --format=json')
+        if stdout:
+            out = stdout.read().decode("utf-8")
+            LOG.debug('EDEN stdout: ' + out)
+            apps = json.loads(out)
+        if stderr:
+            out = stderr.read().decode("utf-8")
+            LOG.debug('EDEN stderr: ' + out)
+
+    return apps
+
+def eden_cpu_info():
+    info = eden_dinfo()
+    cpu_info = collections.OrderedDict([
+        ('arch', info["machineArch"]),
+        ('model',  info["minfo"]["productName"]),
+        ('vendor', info["minfo"]["manufacturer"]),
+        ('topology', {
+            'cores': info["ncpu"],
+            #'threads': 1,
+            #'sockets': 4,
+        }),
+    ])
+
+    return cpu_info
+
+def eden_diag():
+    LOG.debug("EDEN eden_diag")
+    diag = {}
+    info = eden_dinfo()
+    diag['cpu0_time'] = datetime.datetime.now() - \
+        datetime.datetime.strptime(info["bootTime"],
+                                   "%Y-%m-%dT%H:%M:%SZ")
+    diag['memory'] = int(info["memory"])
+    
+    dm = eden_metric()['dm']
+    #'vda_errors': -1,
+    #'vda_read': 262144,
+    #'vda_read_req': 112,
+    #'vda_write': 5778432,
+    #'vda_write_req': 488,
+    diag['vnet1_rx'] = int(dm[0]["rxBytes"])
+    #'vnet1_rx_drop': 0,
+    #'vnet1_rx_errors': 0,
+    diag['vnet1_rx_packets'] = int(dm[0]["rxPkts"])
+    diag['vnet1_tx'] = int(dm[0]["txBytes"])
+    #'vnet1_tx_drop': 0,
+    #'vnet1_tx_errors': 0,
+    diag['vnet1_tx_packets'] = int(dm[0]["txPkts"])
+    
+    return diag
+
+def eden_diag_app(name):
+    LOG.debug("EDEN eden_diag_app")
+    diags = diagnostics_obj.Diagnostics(
+        state=power_state.STATE_MAP[eden_state(name)],
+        driver='eve_os', #hypervisor='eve_os',
+        hypervisor_os='linux',
+        uptime=46664, config_drive=True)
+
+    uptime=0
+    CPUUsage = 0
+    mac = ''
+    rxb = 0
+    txb = 0
+    rxp = 0
+    txp = 0
+    mmax = 0
+    mused = 0
+
+    apps = eden_pod_ps()
+    for app in apps:
+        if app['Name'] == name:
+            CPUUsage = float(app['CPUUsage'])
+            mac = app["Macs"][0]
+            
+    metric = eden_metric()
+    if 'am' in metric:
+        apps = metric['am']
+
+        for app in apps:
+            if app['AppName'] == name:
+                t = app['cpu']['upTime']
+                # Convert to seconds
+                t = t.split('T')[-1][:-1].split(':')
+                uptime = int(t[0])*3600 + int(t[1])*60 + float(t[2])
+                nw = app['network'][0]
+                txb = int(nw['txBytes'])
+                rxb = int(nw['rxBytes'])
+                txp = int(nw['txPkts'])
+                rxp = int(nw['txPkts'])
+                mmax = int(app['memory']['availMem'])
+                mused = int(app['memory']['usedMem'])
+
+        diags.add_cpu(id=0, time=uptime, utilisation=CPUUsage)
+        diags.add_nic(mac_address=mac,
+                      rx_octets=rxb,
+                      #rx_errors=100,
+                      #rx_drop=200,
+                      rx_packets=rxp,
+                      #rx_rate=300,
+                      tx_octets=txb,
+                      #tx_errors=400,
+                      #tx_drop=500,
+                      tx_packets=txp,
+                      #tx_rate=600
+                      )
+        diags.memory_details = diagnostics_obj.MemoryDiagnostics(
+            maximum=mmax, used=mused)
+
+    LOG.debug('EDEN "%s" diags: %s' % (name, str(diags)))
+    return(diags)
 
 
 class Resources(object):
@@ -365,7 +598,6 @@ class EVEDriver(driver.ComputeDriver):
 
     def __init__(self, virtapi, read_only=False):
         super(EVEDriver, self).__init__(virtapi)
-        self.instances = {}
         self.resources = Resources(
             vcpus=self.vcpus,
             memory_mb=self.memory_mb,
@@ -390,6 +622,7 @@ class EVEDriver(driver.ComputeDriver):
         self._vif_driver = EVEVIFDriver()
 
     def init_host(self, host):
+        LOG.debug("EVE_OS init_host: " + str(host))
         self._host = host
         # NOTE(gibi): this is unnecessary complex and fragile but this is
         # how many current functional sample tests expect the node name.
@@ -404,21 +637,28 @@ class EVEDriver(driver.ComputeDriver):
         self._nodes = nodes
 
     def get_info(self, instance, use_cache=True):
-        if instance.uuid not in self.instances:
-            raise exception.InstanceNotFound(instance_id=instance.uuid)
-        i = self.instances[instance.uuid]
-        # return hardware.InstanceInfo(state=i.state)
-        state = eden_state(i.ename)
+        LOG.debug("EVE_OS get_info %s (%s)" % (instance.display_name, instance.uuid))
+        state = eden_state(instance.uuid)
         return hardware.InstanceInfo(state=state)
 
     def list_instances(self):
-        return [self.instances[uuid].name for uuid in self.instances.keys()]
+        LOG.debug("EVE_OS list_instances: ")
+        ctx = nova_context.get_admin_context()
+        for uuid in eden_uuids_list():
+            instance = nova_objects.Instance.get_by_uuid(ctx, uuid)
+            LOG.debug("%s: %s" % (uuid, instance.name))
+        instances = [nova_objects.Instance.get_by_uuid(ctx, uuid).name for uuid in eden_uuids_list()]
+        LOG.debug("EVE_OS instances: " + str(instances))
+        
+        return instances
 
     def list_instance_uuids(self):
-        return list(self.instances.keys())
+        LOG.debug("EVE_OS list_instance_uuids")
+        return eden_uuids_list()
 
     def plug_vifs(self, instance, network_info):
         """Plug VIFs into networks."""
+        LOG.debug("EVE_OS plug_vifs")
         LOG.warning("plug_vifs Plugging network_info %(network_info)s to %(instance)s",
                     {'network_info': network_info, 'instance': instance})
         if network_info:
@@ -427,6 +667,7 @@ class EVEDriver(driver.ComputeDriver):
 
     def unplug_vifs(self, instance, network_info):
         """Unplug VIFs from networks."""
+        LOG.debug("EVE_OS unplug_vifs")
         LOG.warning("unplug_vifs unPlugging network_info %(network_info)s to %(instance)s",
                     {'network_info': network_info, 'instance': instance})
         if network_info:
@@ -450,16 +691,14 @@ class EVEDriver(driver.ComputeDriver):
                 mac_addresses.append(vif['address'])
 
         uuid = instance.uuid
-        ename = instance.display_name
-        state = power_state.RUNNING if power_on else power_state.SHUTDOWN
+        ename = instance.uuid
+        LOG.debug("EVE_OS spawn %s (%s)" % (ename, uuid))
 
         flavor = instance.flavor
         self.resources.claim(
             vcpus=flavor.vcpus,
             mem=flavor.memory_mb,
             disk=flavor.root_gb)
-        eve_instance = EVEInstance(instance.name, ename, state, uuid)
-        self.instances[uuid] = eve_instance
 
         # Download image
         LOG.debug("EDEN Image META: " + str(image_meta))
@@ -481,35 +720,33 @@ class EVEDriver(driver.ComputeDriver):
 
         self.plug_vifs(instance, network_info)
 
-        ename = eden_pod_deploy(ename, flavor.vcpus, flavor.memory_mb,
+        ename = eden_pod_deploy(uuid, flavor.vcpus, flavor.memory_mb,
                                 flavor.root_gb, eden_image_path, mac_addresses)
+
+        #state = eden_state(uuid)
 
     def destroy(self, context, instance, network_info, block_device_info=None,
                 destroy_disks=True, destroy_secrets=True):
         key = instance.uuid
-        name = instance.display_name
+        LOG.debug("EVE_OS destroy %s" % key)
         self.unplug_vifs(instance, network_info)
-        if key in self.instances:
-            name = eden_pod_delete(name)
+        instances = self.list_instance_uuids()
+        if key in instances:
+            name = eden_pod_delete(key)
             flavor = instance.flavor
             self.resources.release(
                 vcpus=flavor.vcpus,
                 mem=flavor.memory_mb,
                 disk=flavor.root_gb)
-            del self.instances[key]
         else:
             LOG.warning("Key '%(key)s' not in instances '%(inst)s'",
                         {'key': key,
-                         'inst': self.instances}, instance=instance)
-
-    def snapshot(self, context, instance, image_id, update_task_state):
-        if instance.uuid not in self.instances:
-            raise exception.InstanceNotRunning(instance_id=instance.uuid)
-        update_task_state(task_state=task_states.IMAGE_UPLOADING)
+                         'inst': instances}, instance=instance)
 
     def reboot(self, context, instance, network_info, reboot_type,
                block_device_info=None, bad_volumes_callback=None,
                accel_info=None):
+        LOG.debug("EVE_OS reboot")
         # If the guest is not on the hypervisor and we're doing a hard reboot
         # then mimic the libvirt driver by spawning the guest.
         if (instance.uuid not in self.instances and
@@ -524,99 +761,59 @@ class EVEDriver(driver.ComputeDriver):
                           block_device_info=block_device_info)
 
     def get_host_ip_addr(self):
-        return '192.168.0.1'
-
-    def set_admin_password(self, instance, new_pass):
-        pass
-
-    def resume_state_on_host_boot(self, context, instance, network_info,
-                                  block_device_info=None):
-        pass
-
-    def rescue(self, context, instance, network_info, image_meta,
-               rescue_password, block_device_info):
-        pass
-
-    def unrescue(
-            self,
-            context: nova_context.RequestContext,
-            instance: 'objects.Instance',
-    ):
-        self.instances[instance.uuid].state = power_state.RUNNING
+        return CONF.my_ip
 
     def poll_rebooting_instances(self, timeout, instances):
-        pass
-
-    def migrate_disk_and_power_off(self, context, instance, dest,
-                                   flavor, network_info,
-                                   block_device_info=None,
-                                   timeout=0, retry_interval=0):
-        pass
-
-    def finish_revert_migration(self, context, instance, network_info,
-                                migration, block_device_info=None,
-                                power_on=True):
-        state = power_state.RUNNING if power_on else power_state.SHUTDOWN
-        self.instances[instance.uuid] = EVEInstance(
-            instance.name, ename, state, instance.uuid)
-
-    def post_live_migration_at_destination(self, context, instance,
-                                           network_info,
-                                           block_migration=False,
-                                           block_device_info=None):
-        # Called from the destination host after a successful live migration
-        # so spawn the instance on this host to track it properly.
-        image_meta = injected_files = admin_password = allocations = None
-        self.spawn(context, instance, image_meta, injected_files,
-                   admin_password, allocations)
+        LOG.debug("EVE_OS poll_rebooting_instances")
 
     def power_off(self, instance, timeout=0, retry_interval=0):
-        if instance.uuid in self.instances:
-            self.instances[instance.uuid].state = power_state.SHUTDOWN
-        else:
-            raise exception.InstanceNotFound(instance_id=instance.uuid)
+        LOG.debug("EVE_OS power_off")
+        eden_pod_stop(instance.uuid)
+        #if instance.uuid in self.instances:
+        #    self.instances[instance.uuid].state = power_state.SHUTDOWN
+        #else:
+        #    raise exception.InstanceNotFound(instance_id=instance.uuid)
 
     def power_on(self, context, instance, network_info,
-                 block_device_info=None, accel_info=None, should_plug_vifs=True):
-        if instance.uuid in self.instances:
-            self.instances[instance.uuid].state = power_state.RUNNING
-        else:
-            raise exception.InstanceNotFound(instance_id=instance.uuid)
+                 block_device_info=None, accel_info=None,
+                 should_plug_vifs=True):
+        LOG.debug("EVE_OS power_on")
+        eden_pod_start(instance.uuid)
+
+        #if instance.uuid in self.instances:
+        #    self.instances[instance.uuid].state = power_state.RUNNING
+        #else:
+        #    raise exception.InstanceNotFound(instance_id=instance.uuid)
+
         if should_plug_vifs:
             self.plug_vifs(instance, network_info)
 
-    def trigger_crash_dump(self, instance):
-        pass
-
-    def soft_delete(self, instance):
-        pass
-
-    def restore(self, instance):
-        pass
-
     def pause(self, instance):
-        pass
+        LOG.debug("EVE_OS pause")
+        eden_pod_stop(instance.uuid)
 
     def unpause(self, instance):
-        pass
+        LOG.debug("EVE_OS unpause")
+        eden_pod_start(instance.uuid)
 
     def suspend(self, context, instance):
-        pass
+        LOG.debug("EVE_OS suspend")
+        eden_pod_stop(instance.uuid)
 
     def resume(self, context, instance, network_info, block_device_info=None):
-        pass
+        LOG.debug("EVE_OS resume")
+        eden_pod_start(instance.uuid)
 
     def cleanup(self, context, instance, network_info, block_device_info=None,
                 destroy_disks=True, migrate_data=None, destroy_vifs=True,
                 destroy_secrets=True):
         # cleanup() should not be called when the guest has not been destroyed.
-        if instance.uuid in self.instances:
-            raise exception.InstanceExists(
-                "Instance %s has not been destroyed." % instance.uuid)
+        LOG.debug("EVE_OS cleanup")
 
     def attach_volume(self, context, connection_info, instance, mountpoint,
                       disk_bus=None, device_type=None, encryption=None):
         """Attach the disk to the instance at mountpoint using info."""
+        LOG.debug("EVE_OS attach_volume")
         instance_name = instance.name
         if instance_name not in self._mounts:
             self._mounts[instance_name] = {}
@@ -625,6 +822,7 @@ class EVEDriver(driver.ComputeDriver):
     def detach_volume(self, context, connection_info, instance, mountpoint,
                       encryption=None):
         """Detach the disk attached to the instance."""
+        LOG.debug("EVE_OS detach_volume")
         try:
             del self._mounts[instance.name][mountpoint]
         except KeyError:
@@ -633,6 +831,7 @@ class EVEDriver(driver.ComputeDriver):
     def swap_volume(self, context, old_connection_info, new_connection_info,
                     instance, mountpoint, resize_to):
         """Replace the disk attached to the instance."""
+        LOG.debug("EVE_OS swap_volume")
         instance_name = instance.name
         if instance_name not in self._mounts:
             self._mounts[instance_name] = {}
@@ -641,72 +840,43 @@ class EVEDriver(driver.ComputeDriver):
     def extend_volume(self, context, connection_info, instance,
                       requested_size):
         """Extend the disk attached to the instance."""
-        pass
+        LOG.debug("EVE_OS extend_volume")        
 
     def attach_interface(self, context, instance, image_meta, vif):
+        LOG.debug("EVE_OS attach_interface")
         if vif['id'] in self._interfaces:
             raise exception.InterfaceAttachFailed(
                 instance_uuid=instance.uuid)
         self._interfaces[vif['id']] = vif
 
     def detach_interface(self, context, instance, vif):
+        LOG.debug("EVE_OS detach_interface")
         try:
             del self._interfaces[vif['id']]
         except KeyError:
             raise exception.InterfaceDetachFailed(
                 instance_uuid=instance.uuid)
 
+
+
+
     def get_diagnostics(self, instance):
-        return {'cpu0_time': 17300000000,
-                'memory': 524288,
-                'vda_errors': -1,
-                'vda_read': 262144,
-                'vda_read_req': 112,
-                'vda_write': 5778432,
-                'vda_write_req': 488,
-                'vnet1_rx': 2070139,
-                'vnet1_rx_drop': 0,
-                'vnet1_rx_errors': 0,
-                'vnet1_rx_packets': 26701,
-                'vnet1_tx': 140208,
-                'vnet1_tx_drop': 0,
-                'vnet1_tx_errors': 0,
-                'vnet1_tx_packets': 662,
-                }
+        LOG.debug("EVE_OS get_diagnostics")
+        return eden_diag()
 
     def get_instance_diagnostics(self, instance):
-        diags = diagnostics_obj.Diagnostics(
-            state='running', driver='libvirt', hypervisor='kvm',
-            hypervisor_os='ubuntu', uptime=46664, config_drive=True)
-        diags.add_cpu(id=0, time=17300000000, utilisation=15)
-        diags.add_nic(mac_address='01:23:45:67:89:ab',
-                      rx_octets=2070139,
-                      rx_errors=100,
-                      rx_drop=200,
-                      rx_packets=26701,
-                      rx_rate=300,
-                      tx_octets=140208,
-                      tx_errors=400,
-                      tx_drop=500,
-                      tx_packets=662,
-                      tx_rate=600)
-        diags.add_disk(read_bytes=262144,
-                       read_requests=112,
-                       write_bytes=5778432,
-                       write_requests=488,
-                       errors_count=1)
-        diags.memory_details = diagnostics_obj.MemoryDiagnostics(
-            maximum=524288, used=0)
-        return diags
+        LOG.debug("EVE_OS get_instance_diagnostics")
+        return eden_diag_app(instance.uuid)
 
     def get_all_volume_usage(self, context, compute_host_bdms):
         """Return usage info for volumes attached to vms on
            a given host.
         """
+        LOG.debug("EVE_OS get_all_volume_usage")
         volusage = []
         if compute_host_bdms:
             volusage = [{'volume': compute_host_bdms[0][
-                'instance_bdms'][0]['volume_id'],
+                                       'instance_bdms'][0]['volume_id'],
                          'instance': compute_host_bdms[0]['instance'],
                          'rd_bytes': 0,
                          'rd_req': 0,
@@ -715,15 +885,8 @@ class EVEDriver(driver.ComputeDriver):
 
         return volusage
 
-    def get_host_cpu_stats(self):
-        stats = {'kernel': 5664160000000,
-                 'idle': 1592705190000000,
-                 'user': 26728850000000,
-                 'iowait': 6121490000000}
-        stats['frequency'] = 800
-        return stats
-
     def block_stats(self, instance, disk_id):
+        LOG.debug("EVE_OS block_stats")
         return [0, 0, 0, 0, None]
 
     def get_console_output(self, context, instance):
@@ -733,27 +896,10 @@ class EVEDriver(driver.ComputeDriver):
         return ctype.ConsoleVNC(internal_access_path='FAKE',
                                 host='evevncconsole.com',
                                 port=6969)
-
-    def get_spice_console(self, context, instance):
-        return ctype.ConsoleSpice(internal_access_path='FAKE',
-                                  host='evespiceconsole.com',
-                                  port=6969,
-                                  tlsPort=6970)
-
-    def get_rdp_console(self, context, instance):
-        return ctype.ConsoleRDP(internal_access_path='FAKE',
-                                host='everdpconsole.com',
-                                port=6969)
-
     def get_serial_console(self, context, instance):
         return ctype.ConsoleSerial(internal_access_path='FAKE',
                                    host='everdpconsole.com',
                                    port=6969)
-
-    def get_mks_console(self, context, instance):
-        return ctype.ConsoleMKS(internal_access_path='FAKE',
-                                host='evemksconsole.com',
-                                port=6969)
 
     def get_available_resource(self, nodename):
         """Updates compute manager resource info on ComputeNode table.
@@ -761,22 +907,31 @@ class EVEDriver(driver.ComputeDriver):
            Since we don't have a real hypervisor, pretend we have lots of
            disk and ram.
         """
-        cpu_info = collections.OrderedDict([
-            ('arch', 'x86_64'),
-            ('model', 'Nehalem'),
-            ('vendor', 'Intel'),
-            ('features', ['pge', 'clflush']),
-            ('topology', {
-                'cores': 1,
-                'threads': 1,
-                'sockets': 4,
-            }),
-        ])
+        LOG.debug("EVE_OS get_available_resource")
+        cpu_info = eden_cpu_info()
+
         if nodename not in self.get_available_nodes():
             return {}
 
         host_status = self.host_status_base.copy()
-        host_status.update(self.resources.dump())
+        dinfo = eden_dinfo()
+        metric = eden_metric()
+        dm = metric['dm']
+        if 'am' in metric:
+            am = metric['am']
+        else:
+            am = []
+
+        resources = {
+            'vcpus': dinfo['ncpu'],
+            'memory_mb': dm['memory']["availMem"],
+            'local_gb': int(dinfo["storage"]),
+            'vcpus_used': len(am),
+            'memory_mb_used': dm['memory']["usedMem"],
+            'local_gb_used': 0
+        }
+        host_status.update(resources)
+        #host_status.update(self.resources.dump())
         host_status['hypervisor_hostname'] = nodename
         host_status['host_hostname'] = nodename
         host_status['host_name_label'] = nodename
@@ -794,170 +949,83 @@ class EVEDriver(driver.ComputeDriver):
         # will use the CONF.xxx_allocation_ratio value if xxx_allocation_ratio
         # is set, and fallback to use the initial_xxx_allocation_ratio
         # otherwise.
+        LOG.debug("EVE_OS update_provider_tree")
         inv = provider_tree.data(nodename).inventory
         ratios = self._get_allocation_ratios(inv)
+
+        info = eden_dinfo()
         inventory = {
             'VCPU': {
-                'total': self.vcpus,
+                'total': info["ncpu"],
                 'min_unit': 1,
-                'max_unit': self.vcpus,
+                'max_unit': info["ncpu"],
                 'step_size': 1,
                 'allocation_ratio': ratios[orc.VCPU],
                 'reserved': CONF.reserved_host_cpus,
             },
             'MEMORY_MB': {
-                'total': self.memory_mb,
+                'total': int(info["memory"]),
                 'min_unit': 1,
-                'max_unit': self.memory_mb,
+                'max_unit': int(info["memory"]),
                 'step_size': 1,
                 'allocation_ratio': ratios[orc.MEMORY_MB],
                 'reserved': CONF.reserved_host_memory_mb,
             },
             'DISK_GB': {
-                'total': self.local_gb,
+                'total': int(info["storage"]),
                 'min_unit': 1,
-                'max_unit': self.local_gb,
+                'max_unit': int(info["storage"]),
                 'step_size': 1,
                 'allocation_ratio': ratios[orc.DISK_GB],
                 'reserved': self._get_reserved_host_disk_gb_from_config(),
             },
         }
+
         provider_tree.update_inventory(nodename, inventory)
 
     def get_instance_disk_info(self, instance, block_device_info=None):
+        LOG.debug("EVE_OS get_instance_disk_info")
         return
-
-    def live_migration(self, context, instance, dest,
-                       post_method, recover_method, block_migration=False,
-                       migrate_data=None):
-        post_method(context, instance, dest, block_migration,
-                    migrate_data)
-        return
-
-    def live_migration_force_complete(self, instance):
-        return
-
-    def live_migration_abort(self, instance):
-        return
-
-    def cleanup_live_migration_destination_check(self, context,
-                                                 dest_check_data):
-        return
-
-    def check_can_live_migrate_destination(self, context, instance,
-                                           src_compute_info, dst_compute_info,
-                                           block_migration=False,
-                                           disk_over_commit=False):
-        data = migrate_data.LibvirtLiveMigrateData()
-        data.filename = 'eve'
-        data.image_type = CONF.libvirt.images_type
-        data.graphics_listen_addr_vnc = CONF.vnc.server_listen
-        data.graphics_listen_addr_spice = CONF.spice.server_listen
-        data.serial_listen_addr = None
-        # Notes(eliqiao): block_migration and disk_over_commit are not
-        # nullable, so just don't set them if they are None
-        if block_migration is not None:
-            data.block_migration = block_migration
-        if disk_over_commit is not None:
-            data.disk_over_commit = disk_over_commit
-        data.disk_available_mb = 100000
-        data.is_shared_block_storage = True
-        data.is_shared_instance_path = True
-
-        return data
-
-    def check_can_live_migrate_source(self, context, instance,
-                                      dest_check_data, block_device_info=None):
-        return dest_check_data
-
-    def finish_migration(self, context, migration, instance, disk_info,
-                         network_info, image_meta, resize_instance,
-                         allocations, block_device_info=None, power_on=True):
-        injected_files = admin_password = None
-        # Finish migration is just like spawning the guest on a destination
-        # host during resize/cold migrate, so re-use the spawn() eve to
-        # claim resources and track the instance on this "hypervisor".
-        self.spawn(context, instance, image_meta, injected_files,
-                   admin_password, allocations,
-                   block_device_info=block_device_info, power_on=power_on)
-
-    def confirm_migration(self, context, migration, instance, network_info):
-        # Confirm migration cleans up the guest from the source host so just
-        # destroy the guest to remove it from the list of tracked instances
-        # unless it is a same-host resize.
-        if migration.source_compute != migration.dest_compute:
-            self.destroy(context, instance, network_info)
-
-    def pre_live_migration(self, context, instance, block_device_info,
-                           network_info, disk_info, migrate_data):
-        return migrate_data
-
-    def rollback_live_migration_at_destination(self, context, instance,
-                                               network_info,
-                                               block_device_info,
-                                               destroy_disks=True,
-                                               migrate_data=None):
-        return
-
-    def _test_remove_vm(self, instance_uuid):
-        """Removes the named VM, as if it crashed. For testing."""
-        self.instances.pop(instance_uuid)
 
     def host_power_action(self, action):
         """Reboots, shuts down or powers up the host."""
+        LOG.debug("EVE_OS host_power_action: " + str(action))
         return action
 
     def host_maintenance_mode(self, host, mode):
         """Start/Stop host maintenance window. On start, it triggers
         guest VMs evacuation.
         """
+        LOG.debug("EVE_OS host_maintenance_mode")
         if not mode:
             return 'off_maintenance'
         return 'on_maintenance'
 
     def set_host_enabled(self, enabled):
         """Sets the specified host's ability to accept new instances."""
+        LOG.debug("EVE_OS set_host_enabled")
         if enabled:
             return 'enabled'
         return 'disabled'
 
     def get_volume_connector(self, instance):
+        LOG.debug("EVE_OS get_volume_connector")
         return {'ip': CONF.my_block_storage_ip,
                 'initiator': 'eve',
                 'host': self._host}
 
     def get_available_nodes(self, refresh=False):
+        LOG.debug("EVE_OS get_available_nodes")
         return self._nodes
 
     def get_nodenames_by_uuid(self, refresh=False):
+        LOG.debug("EVE_OS get_nodenames_by_uuid")
         return {str(getattr(uuids, 'node_%s' % n)): n
                 for n in self.get_available_nodes()}
 
     def instance_on_disk(self, instance):
+        LOG.debug("EVE_OS instance_on_disk")
         return False
-
-    def quiesce(self, context, instance, image_meta):
-        pass
-
-    def unquiesce(self, context, instance, image_meta):
-        pass
-
-
-class EVEVirtAPI(virtapi.VirtAPI):
-    @contextlib.contextmanager
-    def wait_for_instance_event(self, instance, event_names, deadline=300,
-                                error_callback=None):
-        # NOTE(danms): Don't actually wait for any events, just
-        # fall through
-        yield
-
-    def exit_wait_early(self, events):
-        # We never wait, so there is nothing to exit early
-        pass
-
-    def update_compute_provider_status(self, context, rp_uuid, enabled):
-        pass
-
 
 class EVEDriverWithoutEVENodes(EVEDriver):
     """EVEDriver that behaves like a real single-node driver.
