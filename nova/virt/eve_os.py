@@ -411,20 +411,20 @@ def eden_diag():
                                    "%Y-%m-%dT%H:%M:%SZ")
     diag['memory'] = int(info["memory"])
     
-    dm = eden_metric()['dm']
+    nw = eden_metric()['dm']["network"][0]
     #'vda_errors': -1,
     #'vda_read': 262144,
     #'vda_read_req': 112,
     #'vda_write': 5778432,
     #'vda_write_req': 488,
-    diag['vnet1_rx'] = int(dm[0]["rxBytes"])
+    diag['vnet1_rx'] = int(nw["rxBytes"])
     #'vnet1_rx_drop': 0,
     #'vnet1_rx_errors': 0,
-    diag['vnet1_rx_packets'] = int(dm[0]["rxPkts"])
-    diag['vnet1_tx'] = int(dm[0]["txBytes"])
+    diag['vnet1_rx_packets'] = int(nw["rxPkts"])
+    diag['vnet1_tx'] = int(nw["txBytes"])
     #'vnet1_tx_drop': 0,
     #'vnet1_tx_errors': 0,
-    diag['vnet1_tx_packets'] = int(dm[0]["txPkts"])
+    diag['vnet1_tx_packets'] = int(nw["txPkts"])
     
     return diag
 
@@ -954,27 +954,39 @@ class EVEDriver(driver.ComputeDriver):
         ratios = self._get_allocation_ratios(inv)
 
         info = eden_dinfo()
+        if "ncpu" in info:
+            ncpu = info["ncpu"]
+        else:
+            ncpu = 0
+        if "memory" in info:
+            mem = int(info["memory"])
+        else:
+            mem = 0
+        if "storage" in info:
+            str = int(info["storage"])
+        else:
+            str = 0
         inventory = {
             'VCPU': {
-                'total': info["ncpu"],
+                'total': ncpu,
                 'min_unit': 1,
-                'max_unit': info["ncpu"],
+                'max_unit': ncpu,
                 'step_size': 1,
                 'allocation_ratio': ratios[orc.VCPU],
                 'reserved': CONF.reserved_host_cpus,
             },
             'MEMORY_MB': {
-                'total': int(info["memory"]),
+                'total': mem,
                 'min_unit': 1,
-                'max_unit': int(info["memory"]),
+                'max_unit': mem,
                 'step_size': 1,
                 'allocation_ratio': ratios[orc.MEMORY_MB],
                 'reserved': CONF.reserved_host_memory_mb,
             },
             'DISK_GB': {
-                'total': int(info["storage"]),
+                'total': str,
                 'min_unit': 1,
-                'max_unit': int(info["storage"]),
+                'max_unit': str,
                 'step_size': 1,
                 'allocation_ratio': ratios[orc.DISK_GB],
                 'reserved': self._get_reserved_host_disk_gb_from_config(),
