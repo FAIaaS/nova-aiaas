@@ -253,7 +253,6 @@ def eden_pod_deploy(name, vcpus, mem, disk, image, mac_addresses=None):
 
     return ename
 
-
 def eden_pod_delete(name):
     LOG.debug("EDEN eden_pod_delete")
     ename = ''
@@ -329,7 +328,7 @@ def eden_pod_stop(name):
 def eden_dinfo():
     LOG.debug("EDEN eden_dinfo")
     connect = eden_connect()
-    info = None
+    info = {}
     with connect:
         stdin, stdout, stderr = connect.exec_command(
             'cd ' + CONF.eve_os.eden_dir + '; ./eden info --format json')
@@ -354,7 +353,7 @@ def eden_dinfo():
 
 def eden_metric():
     LOG.debug("EDEN eden_metric")
-    metric = None
+    metric = {}
     connect = eden_connect()
     with connect:        
         stdin, stdout, stderr = connect.exec_command(
@@ -372,7 +371,7 @@ def eden_metric():
 
 def eden_pod_ps():
     LOG.debug("EDEN eden_pod_ps")
-    apps = None
+    apps = []
     connect = eden_connect()
     with connect:
         stdin, stdout, stderr = connect.exec_command(
@@ -434,7 +433,8 @@ def eden_diag_app(name):
         state=power_state.STATE_MAP[eden_state(name)],
         driver='eve_os', #hypervisor='eve_os',
         hypervisor_os='linux',
-        uptime=46664, config_drive=True)
+        #uptime=46664,
+        config_drive=True)
 
     uptime=0
     CPUUsage = 0
