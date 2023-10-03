@@ -410,7 +410,7 @@ def eden_diag():
                                    "%Y-%m-%dT%H:%M:%SZ")
     diag['memory'] = int(info["memory"])
     
-    nw = eden_metric()['dm']["network"][0]
+    nw = eden_metric()['dm']["network"][2]
     #'vda_errors': -1,
     #'vda_read': 262144,
     #'vda_read_req': 112,
@@ -462,11 +462,29 @@ def eden_diag_app(name):
                 # Convert to seconds
                 t = t.split('T')[-1][:-1].split(':')
                 uptime = int(t[0])*3600 + int(t[1])*60 + float(t[2])
-                nw = app['network'][0]
-                txb = int(nw['txBytes'])
-                rxb = int(nw['rxBytes'])
-                txp = int(nw['txPkts'])
-                rxp = int(nw['txPkts'])
+                if 'network' in app:
+                    nw = app['network'][0]
+                    if 'txBytes' in nw:
+                        txb = int(nw['txBytes'])
+                    else:
+                        txb = 0
+                    if 'rxBytes' in nw:
+                        rxb = int(nw['rxBytes'])
+                    else:
+                        rxb = 0
+                    if 'txPkts' in nw:
+                        txp = int(nw['txPkts'])
+                    else:
+                        txp = 0
+                    if 'txPkts' in nw:
+                        rxp = int(nw['txPkts'])
+                    else:
+                        rxp = 0
+                else:
+                    txb = 0
+                    rxb = 0
+                    txp = 0
+                    rxp = 0
                 mmax = int(app['memory']['availMem'])
                 mused = int(app['memory']['usedMem'])
 

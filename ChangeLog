@@ -2,6 +2,7 @@ CHANGES
 =======
 
 * enable validations in nova-lvm
+* Add debug logging when Instance raises OrphanedObjectError
 * Enforce quota usage from placement when unshelving
 * Reproducer for bug 2003991 unshelving offloaded instance
 * Unbind port when offloading a shelved instance
