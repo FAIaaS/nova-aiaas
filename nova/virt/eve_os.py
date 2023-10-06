@@ -40,6 +40,7 @@ from oslo_utils.fixture import uuidsentinel as uuids
 from scp import SCPClient
 
 import nova.conf
+import nova.privsep.linux_net
 import nova.virt.node
 import nova.virt.node
 from nova import context as nova_context
@@ -221,15 +222,17 @@ def eden_state(name):
     return (state)
 
 
-def eden_pod_deploy(name, vcpus, mem, disk, image, mac_addresses=None):
+def eden_pod_deploy(name, vcpus, mem, disk, image, mac_addresses=None, vlan_ids=None):
     LOG.debug("EDEN eden_pod_deploy")
     ename = ''
     connect = eden_connect()
     network_line = " ".join(["--networks=" + EVE_TAP_NET + ":" + \
                              mac for mac in mac_addresses])
+    vlan_line = " ".join(["--vlan=" + EVE_TAP_NET + ":" + vlan for vlan in vlan_ids])
     eden_cmd = './eden pod deploy --name=' + name + \
                ' --cpus=' + str(vcpus) + ' --memory=' + str(mem) + 'MB ' + \
                network_line + \
+               ' ' + vlan_line + \
                ' --disk-size=' + str(disk) + 'GB ' + image
 
     LOG.debug('EDEN cmd: ' + str(eden_cmd))
@@ -548,6 +551,11 @@ class Resources(object):
         }
 
 
+def calculate_vlan(vif_id):
+    # FIXME: we may have hash collision, but no idea how to use something like app number in EVE-OS
+    return str(hash(vif_id) % 4000 + 2)
+
+
 class EVEVIFDriver(object):
     def __init__(self):
         pass
@@ -561,10 +569,15 @@ class EVEVIFDriver(object):
             os_vif.plug(vif, instance)
             veth_1 = ("ev1%s" % vif.id)[:model.NIC_NAME_LEN]
             veth_2 = ("ev2%s" % vif.id)[:model.NIC_NAME_LEN]
+            sub_interface = ("ev0%s" % vif.id)[:model.NIC_NAME_LEN]
             LOG.warning("Creating veth pair %(v1)s to %(v2)s",
                         {'v1': veth_1, 'v2': veth_2})
             vif_plug_ovs.linux_net.create_veth_pair(veth_1, veth_2, EVE_VETH_MTU)
-            vif_plug_ovs.linux_net.add_bridge_port(vif.bridge_name, veth_1)
+            LOG.warning("Creating sub_interface %(sub_interface)s for link %(link)s vlan_id %(vlan_id)s",
+                        {'sub_interface': sub_interface, 'link': veth_1, 'vlan_id': calculate_vlan(vif.id)})
+            nova.privsep.linux_net.add_vlan(veth_1, sub_interface, calculate_vlan(vif.id))
+            nova.privsep.linux_net.set_device_enabled(sub_interface)
+            vif_plug_ovs.linux_net.add_bridge_port(vif.bridge_name, sub_interface)
             vif_plug_ovs.linux_net.add_bridge_port(EVE_LOCAL_BRIDGE, veth_2)
             LOG.warning("Plugging vif %(vif)s to %(instance)s done", {'vif': vif, 'instance': instance})
         else:
@@ -579,6 +592,8 @@ class EVEVIFDriver(object):
             instance = os_vif_util.nova_to_osvif_instance(instance)
             veth_1 = ("ev1%s" % vif.id)[:model.NIC_NAME_LEN]
             veth_2 = ("ev2%s" % vif.id)[:model.NIC_NAME_LEN]
+            sub_interface = ("ev0%s" % vif.id)[:model.NIC_NAME_LEN]
+            vif_plug_ovs.linux_net.delete_net_dev(sub_interface)
             vif_plug_ovs.linux_net.delete_net_dev(veth_1)
             vif_plug_ovs.linux_net.delete_net_dev(veth_2)
             os_vif.unplug(vif, instance)
@@ -703,6 +718,7 @@ class EVEDriver(driver.ComputeDriver):
               block_device_info=None, power_on=True, accel_info=None):
 
         mac_addresses = []
+        vlan_ids = []
 
         if network_info:
             for vif in network_info:
@@ -713,6 +729,7 @@ class EVEDriver(driver.ComputeDriver):
                 # with a detach_interface() call.
                 self._interfaces[vif['id']] = vif
                 mac_addresses.append(vif['address'])
+                vlan_ids.append(calculate_vlan(vif['id']))
 
         uuid = instance.uuid
         ename = instance.uuid
@@ -745,7 +762,7 @@ class EVEDriver(driver.ComputeDriver):
         self.plug_vifs(instance, network_info)
 
         ename = eden_pod_deploy(uuid, flavor.vcpus, flavor.memory_mb,
-                                flavor.root_gb, eden_image_path, mac_addresses)
+                                flavor.root_gb, eden_image_path, mac_addresses, vlan_ids)
 
         # state = eden_state(uuid)
 
