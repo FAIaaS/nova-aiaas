@@ -21,15 +21,11 @@ A EVE-OS hypervisor.
 """
 
 import collections
-import contextlib
 import datetime
+import json
 import os
-import time
-import uuid
 import re
 import time
-import json
-import fixtures
 
 import os_resource_classes as orc
 import os_vif
@@ -45,26 +41,20 @@ from scp import SCPClient
 
 import nova.conf
 import nova.virt.node
+import nova.virt.node
 from nova import context as nova_context
-from nova import objects as nova_objects
 from nova import exception
-from nova import objects
+from nova import objects as nova_objects
 from nova.compute import power_state
-from nova.compute import task_states
-from nova.compute import vm_states
 from nova.console import type as ctype
 from nova.i18n import _
 from nova.network import model
 from nova.network import os_vif_util
 from nova.objects import diagnostics as diagnostics_obj
 from nova.objects import fields as obj_fields
-from nova.objects import migrate_data
 from nova.virt import driver
 from nova.virt import hardware
 from nova.virt import images
-from nova.virt.ironic import driver as ironic
-import nova.virt.node
-from nova.virt import virtapi
 
 CONF = nova.conf.CONF
 
@@ -82,6 +72,7 @@ def eden_ssh():
                    pkey=pkey)
 
     return client
+
 
 # https://github.com/lf-edge/eden/blob/master/docs/tap.md#create-network-and-application
 EVE_TAP_NET = "tap-net"
@@ -130,6 +121,7 @@ def eden_connect():
 
     return client
 
+
 def eden_start():
     LOG.debug("EDEN eden_start")
     connect = eden_connect()
@@ -144,6 +136,7 @@ def eden_start():
             LOG.debug('EDEN stderr: ' + out)
 
         return (stdout.channel.recv_exit_status())
+
 
 def eden_stop():
     LOG.debug("EDEN eden_stop")
@@ -160,6 +153,7 @@ def eden_stop():
 
         return (stdout.channel.recv_exit_status())
 
+
 def eden_status():
     LOG.debug("EDEN eden_status")
     state = power_state.SHUTDOWN
@@ -175,12 +169,13 @@ def eden_status():
         if stderr:
             out = stderr.read().decode("utf-8")
             LOG.debug('EDEN stderr: ' + out)
-            
+
     LOG.debug('EDEN status: ' + power_state.STATE_MAP[state])
-    return(state)
+    return (state)
+
 
 def eden_uuids_list():
-    LOG.debug("EDEN eden_uuids_list")    
+    LOG.debug("EDEN eden_uuids_list")
     uuids = []
     connect = eden_connect()
     with connect:
@@ -197,9 +192,10 @@ def eden_uuids_list():
         if stderr:
             out = stderr.read().decode("utf-8")
             LOG.debug('EDEN stderr: ' + out)
- 
+
     LOG.debug('EDEN uuids: ' + str(uuids))
-    return(uuids)
+    return (uuids)
+
 
 def eden_state(name):
     LOG.debug("EDEN eden_state")
@@ -224,6 +220,7 @@ def eden_state(name):
     LOG.debug('EDEN "%s" state: %s' % (name, power_state.STATE_MAP[state]))
     return (state)
 
+
 def eden_pod_deploy(name, vcpus, mem, disk, image, mac_addresses=None):
     LOG.debug("EDEN eden_pod_deploy")
     ename = ''
@@ -246,12 +243,13 @@ def eden_pod_deploy(name, vcpus, mem, disk, image, mac_addresses=None):
             search = re.search("INFO\[\d*\] deploy pod (.*) with .* request sent", out)
             if search:
                 ename = search.group(1)
-                return(name)
+                return (name)
         if stderr:
             out = stderr.read().decode("utf-8")
             LOG.debug('EDEN stderr: ' + out)
 
     return ename
+
 
 def eden_pod_delete(name):
     LOG.debug("EDEN eden_pod_delete")
@@ -277,53 +275,56 @@ def eden_pod_delete(name):
 
     return ename
 
+
 def eden_pod_start(name):
-    LOG.debug("EDEN eden_pod_start")    
-    ename=''
+    LOG.debug("EDEN eden_pod_start")
+    ename = ''
     connect = eden_connect()
     eden_cmd = './eden pod start ' + name
 
     LOG.debug('EDEN cmd: ' + str(eden_cmd))
-    
+
     with connect:
         stdin, stdout, stderr = connect.exec_command(
             'cd ' + CONF.eve_os.eden_dir + '; ' + eden_cmd)
         if stdout:
             out = stdout.read().decode("utf-8")
             LOG.debug('EDEN stdout: ' + out)
-            search = re.search("INFO\[\d*\] app (.*) start done",out)
+            search = re.search("INFO\[\d*\] app (.*) start done", out)
             if search:
                 ename = search.group(1)
-                return(name)
+                return (name)
         if stderr:
             out = stderr.read().decode("utf-8")
             LOG.debug('EDEN stderr: ' + out)
 
     return ename
 
+
 def eden_pod_stop(name):
     LOG.debug("EDEN eden_pod_stop")
-    ename=''
+    ename = ''
     connect = eden_connect()
     eden_cmd = './eden pod stop ' + name
 
     LOG.debug('EDEN cmd: ' + str(eden_cmd))
-    
+
     with connect:
         stdin, stdout, stderr = connect.exec_command(
             'cd ' + CONF.eve_os.eden_dir + '; ' + eden_cmd)
         if stdout:
             out = stdout.read().decode("utf-8")
             LOG.debug('EDEN stdout: ' + out)
-            search = re.search("INFO\[\d*\] app (.*) stop done",out)
+            search = re.search("INFO\[\d*\] app (.*) stop done", out)
             if search:
                 ename = search.group(1)
-                return(name)
+                return (name)
         if stderr:
             out = stderr.read().decode("utf-8")
             LOG.debug('EDEN stderr: ' + out)
 
     return ename
+
 
 def eden_dinfo():
     LOG.debug("EDEN eden_dinfo")
@@ -334,7 +335,7 @@ def eden_dinfo():
             'cd ' + CONF.eve_os.eden_dir + '; ./eden info --format json')
         if stdout:
             out = stdout.read().decode("utf-8")
-            #LOG.debug('EDEN stdout: ' + out)
+            # LOG.debug('EDEN stdout: ' + out)
             out = out.split('\n')
             infos = len(out)
             for i in range(0, infos):
@@ -351,11 +352,12 @@ def eden_dinfo():
 
     return info
 
+
 def eden_metric():
     LOG.debug("EDEN eden_metric")
     metric = {}
     connect = eden_connect()
-    with connect:        
+    with connect:
         stdin, stdout, stderr = connect.exec_command(
             'cd ' + CONF.eve_os.eden_dir + \
             '; ./eden metric --format=json --tail 1')
@@ -368,6 +370,7 @@ def eden_metric():
             LOG.debug('EDEN stderr: ' + out)
 
     return metric
+
 
 def eden_pod_ps():
     LOG.debug("EDEN eden_pod_ps")
@@ -386,57 +389,60 @@ def eden_pod_ps():
 
     return apps
 
+
 def eden_cpu_info():
     info = eden_dinfo()
     cpu_info = collections.OrderedDict([
         ('arch', info["machineArch"]),
-        ('model',  info["minfo"]["productName"]),
+        ('model', info["minfo"]["productName"]),
         ('vendor', info["minfo"]["manufacturer"]),
         ('topology', {
             'cores': info["ncpu"],
-            #'threads': 1,
-            #'sockets': 4,
+            # 'threads': 1,
+            # 'sockets': 4,
         }),
     ])
 
     return cpu_info
+
 
 def eden_diag():
     LOG.debug("EDEN eden_diag")
     diag = {}
     info = eden_dinfo()
     diag['cpu0_time'] = datetime.datetime.now() - \
-        datetime.datetime.strptime(info["bootTime"],
-                                   "%Y-%m-%dT%H:%M:%SZ")
+                        datetime.datetime.strptime(info["bootTime"],
+                                                   "%Y-%m-%dT%H:%M:%SZ")
     diag['memory'] = int(info["memory"])
-    
+
     nw = eden_metric()['dm']["network"][2]
-    #'vda_errors': -1,
-    #'vda_read': 262144,
-    #'vda_read_req': 112,
-    #'vda_write': 5778432,
-    #'vda_write_req': 488,
+    # 'vda_errors': -1,
+    # 'vda_read': 262144,
+    # 'vda_read_req': 112,
+    # 'vda_write': 5778432,
+    # 'vda_write_req': 488,
     diag['vnet1_rx'] = int(nw["rxBytes"])
-    #'vnet1_rx_drop': 0,
-    #'vnet1_rx_errors': 0,
+    # 'vnet1_rx_drop': 0,
+    # 'vnet1_rx_errors': 0,
     diag['vnet1_rx_packets'] = int(nw["rxPkts"])
     diag['vnet1_tx'] = int(nw["txBytes"])
-    #'vnet1_tx_drop': 0,
-    #'vnet1_tx_errors': 0,
+    # 'vnet1_tx_drop': 0,
+    # 'vnet1_tx_errors': 0,
     diag['vnet1_tx_packets'] = int(nw["txPkts"])
-    
+
     return diag
+
 
 def eden_diag_app(name):
     LOG.debug("EDEN eden_diag_app")
     diags = diagnostics_obj.Diagnostics(
         state=power_state.STATE_MAP[eden_state(name)],
-        driver='eve_os', #hypervisor='eve_os',
+        driver='eve_os',  # hypervisor='eve_os',
         hypervisor_os='linux',
-        #uptime=46664,
+        # uptime=46664,
         config_drive=True)
 
-    uptime=0
+    uptime = 0
     CPUUsage = 0
     mac = ''
     rxb = 0
@@ -451,7 +457,7 @@ def eden_diag_app(name):
         if app['Name'] == name:
             CPUUsage = float(app['CPUUsage'])
             mac = app["Macs"][0]
-            
+
     metric = eden_metric()
     if 'am' in metric:
         apps = metric['am']
@@ -461,7 +467,7 @@ def eden_diag_app(name):
                 t = app['cpu']['upTime']
                 # Convert to seconds
                 t = t.split('T')[-1][:-1].split(':')
-                uptime = int(t[0])*3600 + int(t[1])*60 + float(t[2])
+                uptime = int(t[0]) * 3600 + int(t[1]) * 60 + float(t[2])
                 if 'network' in app:
                     nw = app['network'][0]
                     if 'txBytes' in nw:
@@ -491,21 +497,21 @@ def eden_diag_app(name):
         diags.add_cpu(id=0, time=uptime, utilisation=CPUUsage)
         diags.add_nic(mac_address=mac,
                       rx_octets=rxb,
-                      #rx_errors=100,
-                      #rx_drop=200,
+                      # rx_errors=100,
+                      # rx_drop=200,
                       rx_packets=rxp,
-                      #rx_rate=300,
+                      # rx_rate=300,
                       tx_octets=txb,
-                      #tx_errors=400,
-                      #tx_drop=500,
+                      # tx_errors=400,
+                      # tx_drop=500,
                       tx_packets=txp,
-                      #tx_rate=600
+                      # tx_rate=600
                       )
         diags.memory_details = diagnostics_obj.MemoryDiagnostics(
             maximum=mmax, used=mused)
 
     LOG.debug('EDEN "%s" diags: %s' % (name, str(diags)))
-    return(diags)
+    return (diags)
 
 
 class Resources(object):
@@ -667,7 +673,7 @@ class EVEDriver(driver.ComputeDriver):
             LOG.debug("%s: %s" % (uuid, instance.name))
         instances = [nova_objects.Instance.get_by_uuid(ctx, uuid).name for uuid in eden_uuids_list()]
         LOG.debug("EVE_OS instances: " + str(instances))
-        
+
         return instances
 
     def list_instance_uuids(self):
@@ -741,7 +747,7 @@ class EVEDriver(driver.ComputeDriver):
         ename = eden_pod_deploy(uuid, flavor.vcpus, flavor.memory_mb,
                                 flavor.root_gb, eden_image_path, mac_addresses)
 
-        #state = eden_state(uuid)
+        # state = eden_state(uuid)
 
     def destroy(self, context, instance, network_info, block_device_info=None,
                 destroy_disks=True, destroy_secrets=True):
@@ -787,9 +793,9 @@ class EVEDriver(driver.ComputeDriver):
     def power_off(self, instance, timeout=0, retry_interval=0):
         LOG.debug("EVE_OS power_off")
         eden_pod_stop(instance.uuid)
-        #if instance.uuid in self.instances:
+        # if instance.uuid in self.instances:
         #    self.instances[instance.uuid].state = power_state.SHUTDOWN
-        #else:
+        # else:
         #    raise exception.InstanceNotFound(instance_id=instance.uuid)
 
     def power_on(self, context, instance, network_info,
@@ -798,9 +804,9 @@ class EVEDriver(driver.ComputeDriver):
         LOG.debug("EVE_OS power_on")
         eden_pod_start(instance.uuid)
 
-        #if instance.uuid in self.instances:
+        # if instance.uuid in self.instances:
         #    self.instances[instance.uuid].state = power_state.RUNNING
-        #else:
+        # else:
         #    raise exception.InstanceNotFound(instance_id=instance.uuid)
 
         if should_plug_vifs:
@@ -858,7 +864,7 @@ class EVEDriver(driver.ComputeDriver):
     def extend_volume(self, context, connection_info, instance,
                       requested_size):
         """Extend the disk attached to the instance."""
-        LOG.debug("EVE_OS extend_volume")        
+        LOG.debug("EVE_OS extend_volume")
 
     def attach_interface(self, context, instance, image_meta, vif):
         LOG.debug("EVE_OS attach_interface")
@@ -874,9 +880,6 @@ class EVEDriver(driver.ComputeDriver):
         except KeyError:
             raise exception.InterfaceDetachFailed(
                 instance_uuid=instance.uuid)
-
-
-
 
     def get_diagnostics(self, instance):
         LOG.debug("EVE_OS get_diagnostics")
@@ -894,7 +897,7 @@ class EVEDriver(driver.ComputeDriver):
         volusage = []
         if compute_host_bdms:
             volusage = [{'volume': compute_host_bdms[0][
-                                       'instance_bdms'][0]['volume_id'],
+                'instance_bdms'][0]['volume_id'],
                          'instance': compute_host_bdms[0]['instance'],
                          'rd_bytes': 0,
                          'rd_req': 0,
@@ -914,6 +917,7 @@ class EVEDriver(driver.ComputeDriver):
         return ctype.ConsoleVNC(internal_access_path='FAKE',
                                 host='evevncconsole.com',
                                 port=6969)
+
     def get_serial_console(self, context, instance):
         return ctype.ConsoleSerial(internal_access_path='FAKE',
                                    host='everdpconsole.com',
@@ -949,7 +953,7 @@ class EVEDriver(driver.ComputeDriver):
             'local_gb_used': 0
         }
         host_status.update(resources)
-        #host_status.update(self.resources.dump())
+        # host_status.update(self.resources.dump())
         host_status['hypervisor_hostname'] = nodename
         host_status['host_hostname'] = nodename
         host_status['host_name_label'] = nodename
@@ -1056,6 +1060,7 @@ class EVEDriver(driver.ComputeDriver):
     def instance_on_disk(self, instance):
         LOG.debug("EVE_OS instance_on_disk")
         return False
+
 
 class EVEDriverWithoutEVENodes(EVEDriver):
     """EVEDriver that behaves like a real single-node driver.
