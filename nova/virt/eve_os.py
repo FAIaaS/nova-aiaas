@@ -964,11 +964,16 @@ class EVEDriver(driver.ComputeDriver):
         resources = {
             'vcpus': dinfo['ncpu'],
             'memory_mb': dm['memory']["availMem"],
-            'local_gb': int(dinfo["storage"]),
+            #'local_gb': int(dinfo["storage"]),
             'vcpus_used': len(am),
             'memory_mb_used': dm['memory']["usedMem"],
             'local_gb_used': 0
         }
+        if "storage" in dinfo:
+            resources['local_gb'] = int(dinfo["storage"])
+        else:
+            resources['local_gb'] = 0
+            
         host_status.update(resources)
         # host_status.update(self.resources.dump())
         host_status['hypervisor_hostname'] = nodename
